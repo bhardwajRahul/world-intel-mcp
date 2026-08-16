@@ -7,6 +7,7 @@ development indicators (World Bank) for the world-intel-mcp server.
 import asyncio
 import logging
 import os
+import time
 from datetime import datetime, timezone
 
 from ..fetcher import Fetcher
@@ -266,24 +267,52 @@ async def fetch_gas_prices(
     # has a simpler TLS fingerprint and passes through.  Cache via
     # the fetcher's cache to avoid redundant requests.
     cached = fetcher.cache.get("economic:gas_prices:aaa")
+    is_stale = False
+    stale_created_at: float | None = None
+
     if cached is not None:
         html = cached
     else:
+        html = None
         try:
             html = await asyncio.to_thread(_fetch_aaa_html)
-            if html:
-                fetcher.cache.set("economic:gas_prices:aaa", html, ttl_seconds=1800)
         except Exception as exc:
             logger.warning("Failed to fetch AAA gas prices: %s", exc)
-            html = fetcher.cache.get_stale("economic:gas_prices:aaa")
+
+        if html:
+            fetcher.cache.set("economic:gas_prices:aaa", html, ttl_seconds=1800)
+        else:
+            # _fetch_aaa_html() catches its own errors (e.g. AAA's real
+            # Cloudflare 403) and returns None rather than raising, so
+            # this — not the except block above — is the path a live
+            # outage actually takes. Fall back to whatever stale copy we
+            # have instead of returning an empty page.
+            stale = fetcher.cache.get_stale_meta("economic:gas_prices:aaa")
+            if stale is not None:
+                html, stale_created_at = stale
+                is_stale = True
+
+    fetched_at_dt = (
+        datetime.fromtimestamp(stale_created_at, tz=timezone.utc)
+        if stale_created_at is not None
+        else datetime.now(timezone.utc)
+    )
 
     result: dict = {
         "region": "US",
         "prices": {},
-        "fetched_at": datetime.now(timezone.utc).isoformat(),
+        # Preserves the ORIGINAL fetch time when serving stale data —
+        # previously this was unconditionally datetime.now(), so 3-day-old
+        # cached prices were presented as fetched seconds ago.
+        "fetched_at": fetched_at_dt.isoformat(),
         "source": "aaa",
         "update_frequency": "daily",
     }
+    if is_stale:
+        result["_stale"] = True
+        result["_stale_age_seconds"] = round(
+            max(0.0, time.time() - stale_created_at), 1
+        )
 
     if html is None:
         return result
