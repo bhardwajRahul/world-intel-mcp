@@ -1,5 +1,36 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- Situation briefs now cite their sources. `fetch_situation_brief` builds a
+  numbered `sources` list while walking the overview data: domain, a short
+  description or headline, a URL when the upstream item carries one, and a
+  timestamp when available, covering every metric that contributes to the
+  brief. The Ollama prompt is instructed to cite claims inline as `[n]`
+  using only that list; the structured fallback brief cites mechanically,
+  since it is assembled per-metric. The response gains `sources` and
+  `cited`: `cited` is true only when the returned text actually contains a
+  `[n]` matching a real source number, so a brief where the model ignored
+  the citation instruction (or invented an out-of-range number) is
+  distinguishable from one that genuinely cited its sources. A metric with
+  no traceable upstream item is reported without a citation rather than
+  pointing at something that isn't really there (#15).
+- `intel_daily_digest`: a cited markdown morning brief composing top
+  current events by domain, recent headlines, and, when the optional
+  vector store is installed, recent activity trends and a 24-hour
+  timeline. Every listed item carries a source reference. When the vector
+  store isn't available, the Trends and Timeline sections say so via
+  `data_gaps` instead of rendering as an empty, falsely-quiet section
+  (#15).
+
+### Fixed
+- `_extract_metrics` (situation brief) read the earthquake event list under
+  the key `events`, but `fetch_earthquakes` returns it under `earthquakes`,
+  so the lookup always missed and `max_magnitude` was silently 0 in every
+  brief ever generated. Found while wiring earthquake citations off the
+  same field.
+
 ## 0.2.0 - 2026-08-16
 
 The honesty release. A full review of the data paths found five ways the
