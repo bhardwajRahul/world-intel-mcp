@@ -487,6 +487,8 @@ The vector store uses FastEmbed (ONNX-based, BAAI/bge-small-en-v1.5) for embeddi
 | `FRED_API_KEY` | No | Macro economic data (also used for yield curve) |
 | `OPENSKY_CLIENT_ID` | No | Military flight fallback |
 | `OPENSKY_CLIENT_SECRET` | No | Military flight fallback |
+| `OLLAMA_API_URL` | No | Ollama server for AI-generated briefs (default: `http://localhost:11434`) |
+| `OLLAMA_MODEL` | No | Ollama model for AI-generated briefs (default: `llama3.2`) |
 | `WORLD_INTEL_LOG_LEVEL` | No | Logging level (default: INFO) |
 
 Everything else uses free, unauthenticated public APIs.

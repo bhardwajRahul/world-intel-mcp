@@ -140,7 +140,7 @@ async def fetch_situation_brief(overview_data: dict) -> dict:
     metrics = _extract_metrics(overview_data)
     prompt = _build_prompt(metrics)
 
-    ollama_url = os.environ.get("OLLAMA_API_URL", "http://mac-studio.local:11434")
+    ollama_url = os.environ.get("OLLAMA_API_URL", "http://localhost:11434")
     model = os.environ.get("OLLAMA_MODEL", "llama3.2")
 
     brief_text = ""
