@@ -282,6 +282,50 @@ async def test_fetch_gas_prices_no_data(
     assert result["prices"] == {}
 
 
+@pytest.mark.asyncio
+async def test_fetch_gas_prices_stale_fallback_preserves_original_fetch_time(
+    fetcher: Fetcher, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #5: on live-fetch failure, stale cached gas prices must keep
+    their ORIGINAL fetch timestamp and carry a _stale marker instead of
+    being restamped with datetime.now() — which made 3-day-old prices
+    look like they were fetched seconds ago."""
+    import json
+    import time as time_mod
+    from datetime import datetime, timezone
+
+    from world_intel_mcp.sources import economic
+
+    # Seed a cache entry whose created_at is 3 days in the past (Cache.set
+    # always uses now(), so write the row directly to backdate it).
+    conn = fetcher.cache._get_conn()
+    old_created_at = time_mod.time() - 3 * 86400
+    conn.execute(
+        "INSERT OR REPLACE INTO cache (key, value, expires_at, created_at) VALUES (?, ?, ?, ?)",
+        (
+            "economic:gas_prices:aaa",
+            json.dumps(_AAA_HTML),
+            old_created_at + 1800,  # expired long ago
+            old_created_at,
+        ),
+    )
+    conn.commit()
+
+    # _fetch_aaa_html() swallows its own errors and returns None on a real
+    # failure (e.g. AAA's Cloudflare 403) rather than raising.
+    monkeypatch.setattr(economic, "_fetch_aaa_html", lambda: None)
+
+    result = await economic.fetch_gas_prices(fetcher)
+
+    assert result["_stale"] is True
+    assert result["_stale_age_seconds"] > 2.9 * 86400
+    fetched_at = datetime.fromisoformat(result["fetched_at"])
+    age_days = (datetime.now(timezone.utc) - fetched_at).total_seconds() / 86400
+    assert age_days > 2.9, "fetched_at must preserve the original (stale) fetch time"
+    # The stale payload still parses normally.
+    assert result["prices"]["regular"]["price_per_gallon"] == 3.450
+
+
 @respx.mock
 @pytest.mark.asyncio
 async def test_fetch_residential_natgas(fetcher: Fetcher) -> None:
@@ -707,6 +751,62 @@ async def test_fetch_ucdp_events(fetcher: Fetcher) -> None:
     assert result["count"] == 1
     assert result["events"][0]["country"] == "Ukraine"
     assert result["total_fatalities_best"] == 5
+
+
+@pytest.mark.asyncio
+async def test_fetch_acled_events_distinguishes_fetch_failure_from_zero_events(
+    fetcher: Fetcher, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #3: a post-auth ACLED fetch failure (rate limit, 500,
+    malformed payload) must not be byte-identical to a genuine zero-match
+    result. Repro per the issue: patch the OAuth token to succeed and
+    get_json to return None (the post-auth failure path)."""
+    from world_intel_mcp.sources import conflict
+
+    async def _fake_token() -> str:
+        return "fake-token"
+
+    async def _fake_get_json(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(conflict, "_acled_get_token", _fake_token)
+    monkeypatch.setattr(fetcher, "get_json", _fake_get_json)
+
+    result = await conflict.fetch_acled_events(fetcher, country="Sudan", days=7)
+
+    assert result.get("error") is not None
+    assert result.get("degraded") is True
+    assert result.get("reason") == "acled_fetch_failed"
+    # Additive-only: events/count keep their normal shape (empty list / 0,
+    # not None) so existing callers that don't check "error" or "degraded"
+    # still iterate an empty list instead of crashing.
+    assert result["events"] == []
+    assert result["count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_fetch_acled_events_genuine_zero_has_no_error(
+    fetcher: Fetcher, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A real zero-match query (fetch succeeds, API returns no data) must
+    NOT be flagged as degraded — only actual fetch failures are."""
+    from world_intel_mcp.sources import conflict
+
+    async def _fake_token() -> str:
+        return "fake-token"
+
+    async def _fake_get_json(*args, **kwargs):
+        return {"data": []}
+
+    monkeypatch.setattr(conflict, "_acled_get_token", _fake_token)
+    monkeypatch.setattr(fetcher, "get_json", _fake_get_json)
+
+    result = await conflict.fetch_acled_events(fetcher, country="Iceland", days=7)
+
+    assert result.get("error") is None
+    assert result.get("degraded") is None
+    assert result["events"] == []
+    assert result["count"] == 0
 
 
 # ---------------------------------------------------------------------------

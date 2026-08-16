@@ -60,7 +60,9 @@ class Cache:
                 created_at REAL NOT NULL
             )
         """)
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_cache_expires ON cache(expires_at)")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_cache_expires ON cache(expires_at)"
+        )
         conn.commit()
 
     def _get_conn(self) -> sqlite3.Connection:
@@ -86,13 +88,26 @@ class Cache:
 
     def get_stale(self, key: str) -> Any | None:
         """Get cached value even if expired (last-known-good fallback)."""
+        meta = self.get_stale_meta(key)
+        return meta[0] if meta is not None else None
+
+    def get_stale_meta(self, key: str) -> tuple[Any, float] | None:
+        """Get cached value even if expired, plus when it was originally written.
+
+        Returns ``(value, created_at)`` (``created_at`` is a Unix timestamp)
+        or ``None`` if the key doesn't exist at all. Callers that need to
+        report how old a stale fallback is — or preserve the original
+        fetch time instead of restamping "now" — use this instead of
+        ``get_stale()``.
+        """
         conn = self._get_conn()
         row = conn.execute(
-            "SELECT value FROM cache WHERE key = ?", (key,)
+            "SELECT value, created_at FROM cache WHERE key = ?", (key,)
         ).fetchone()
         if row is None:
             return None
-        return json.loads(row[0])
+        value, created_at = row
+        return json.loads(value), created_at
 
     def set(self, key: str, value: Any, ttl_seconds: int) -> None:
         """Store a value with TTL in seconds.
@@ -121,7 +136,9 @@ class Cache:
         """Remove all expired entries. Returns count removed."""
         try:
             conn = self._get_conn()
-            cursor = conn.execute("DELETE FROM cache WHERE expires_at < ?", (time.time(),))
+            cursor = conn.execute(
+                "DELETE FROM cache WHERE expires_at < ?", (time.time(),)
+            )
             conn.commit()
             return cursor.rowcount
         except sqlite3.OperationalError as exc:

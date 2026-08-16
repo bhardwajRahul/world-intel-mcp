@@ -659,7 +659,7 @@ TOOLS: list[Tool] = [
     ),
     Tool(
         name="intel_hotspot_escalation",
-        description="Dynamic escalation scores for 22 intel hotspots combining news, military, conflict, and convergence signals. Each hotspot scored 0-100.",
+        description="Dynamic escalation scores for 22 intel hotspots from baseline risk, military activity, and conflict signals (ACLED events near each hotspot). Each hotspot scored 0-100, renormalized over the signals actually measured. News-mention and geo-convergence components are not currently wired up and are reported as null (see unavailable_components), not a fabricated zero.",
         inputSchema={"type": "object", "properties": {}},
     ),
     Tool(

@@ -6,7 +6,7 @@ blocks calls for a cooldown period, then allows a single probe.
 
 import logging
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 logger = logging.getLogger("world-intel-mcp.circuit_breaker")
 
@@ -20,6 +20,7 @@ class _State:
     total_trips: int = 0
     total_successes: int = 0
     total_failures: int = 0
+    total_stale_serves: int = 0
 
 
 class CircuitBreaker:
@@ -43,11 +44,15 @@ class CircuitBreaker:
 
     def _threshold_for(self, source: str) -> int:
         """Get failure threshold for a specific source."""
-        return self._per_source.get(source, {}).get("failure_threshold", self.failure_threshold)
+        return self._per_source.get(source, {}).get(
+            "failure_threshold", self.failure_threshold
+        )
 
     def _cooldown_for(self, source: str) -> float:
         """Get cooldown seconds for a specific source."""
-        return self._per_source.get(source, {}).get("cooldown_seconds", self.cooldown_seconds)
+        return self._per_source.get(source, {}).get(
+            "cooldown_seconds", self.cooldown_seconds
+        )
 
     def is_available(self, source: str) -> bool:
         """Check if source is available (circuit closed or cooldown elapsed)."""
@@ -66,19 +71,50 @@ class CircuitBreaker:
         state.total_successes += 1
 
     def record_failure(self, source: str) -> None:
-        """Record failed call — increments counter, may trip breaker."""
+        """Record failed call — increments counter, may trip breaker.
+
+        If the breaker is already open, this failure came from the single
+        probe ``is_available()`` let through once the previous cooldown
+        elapsed. Re-open it and restart the cooldown from now — otherwise
+        ``tripped_at`` stays stuck at the original trip time, cooldown
+        reads as already-elapsed on every subsequent check, and the
+        breaker allows an unthrottled probe on every call ("half-open
+        forever") instead of enforcing backoff.
+        """
         state = self._get(source)
         state.failures += 1
         state.last_failure = time.time()
         state.total_failures += 1
-        if state.failures >= self._threshold_for(source) and not state.is_open:
+        if state.is_open:
+            state.tripped_at = time.time()
+            state.total_trips += 1
+            logger.warning(
+                "Circuit breaker probe failed for %s, re-opening (cooldown=%.0fs)",
+                source,
+                self._cooldown_for(source),
+            )
+        elif state.failures >= self._threshold_for(source):
             state.is_open = True
             state.tripped_at = time.time()
             state.total_trips += 1
             logger.warning(
                 "Circuit breaker TRIPPED for %s (failures=%d, cooldown=%.0fs)",
-                source, state.failures, self._cooldown_for(source),
+                source,
+                state.failures,
+                self._cooldown_for(source),
             )
+
+    def record_stale_serve(self, source: str) -> None:
+        """Record that a non-dict response was served from stale cache.
+
+        Dict responses served stale get an inline ``_stale`` marker
+        (fetcher.py); other payload shapes (raw text/XML, lists) can't
+        carry one the same way, so this counter — surfaced via
+        ``status()`` — is the only signal that a caller received old data
+        for that source.
+        """
+        state = self._get(source)
+        state.total_stale_serves += 1
 
     def status(self) -> dict[str, dict]:
         """Return status of all tracked sources."""
@@ -86,7 +122,9 @@ class CircuitBreaker:
         result = {}
         for source, state in self._states.items():
             if state.is_open:
-                remaining = max(0, self._cooldown_for(source) - (now - state.tripped_at))
+                remaining = max(
+                    0, self._cooldown_for(source) - (now - state.tripped_at)
+                )
                 status = "open" if remaining > 0 else "half-open"
             else:
                 remaining = 0
@@ -98,5 +136,6 @@ class CircuitBreaker:
                 "total_trips": state.total_trips,
                 "total_successes": state.total_successes,
                 "total_failures": state.total_failures,
+                "total_stale_serves": state.total_stale_serves,
             }
         return result

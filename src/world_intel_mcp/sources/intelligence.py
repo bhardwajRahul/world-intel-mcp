@@ -17,7 +17,7 @@ from datetime import datetime, timezone, timedelta
 import httpx
 
 from ..fetcher import Fetcher
-from .conflict import acled_query
+from .conflict import acled_query, acled_failure_reason
 from ..analysis.focal_points import detect_focal_points
 from ..analysis.signals import aggregate_country_signals
 from ..analysis.temporal import TemporalBaseline
@@ -53,15 +53,39 @@ _WB_BASE = "https://api.worldbank.org/v2/country"
 _USGS_ENDPOINT = "https://earthquake.usgs.gov/fdsnws/event/1/query"
 
 _BASELINES = {
-    "Syria": 5000, "Yemen": 3000, "Ukraine": 8000, "Myanmar": 4000,
-    "Somalia": 2500, "Nigeria": 3500, "DR Congo": 3000, "Afghanistan": 2000,
-    "Iraq": 1500, "Mali": 2000, "Burkina Faso": 2500, "Ethiopia": 2000,
-    "Sudan": 3000, "South Sudan": 1500, "Cameroon": 1000, "Mozambique": 800,
-    "Pakistan": 1200, "India": 1000, "Colombia": 1500, "Mexico": 4000,
+    "Syria": 5000,
+    "Yemen": 3000,
+    "Ukraine": 8000,
+    "Myanmar": 4000,
+    "Somalia": 2500,
+    "Nigeria": 3500,
+    "DR Congo": 3000,
+    "Afghanistan": 2000,
+    "Iraq": 1500,
+    "Mali": 2000,
+    "Burkina Faso": 2500,
+    "Ethiopia": 2000,
+    "Sudan": 3000,
+    "South Sudan": 1500,
+    "Cameroon": 1000,
+    "Mozambique": 800,
+    "Pakistan": 1200,
+    "India": 1000,
+    "Colombia": 1500,
+    "Mexico": 4000,
 }
 
 _FOCUS_COUNTRIES = [
-    "SYR", "UKR", "YEM", "MMR", "SDN", "ETH", "NGA", "COD", "AFG", "IRQ",
+    "SYR",
+    "UKR",
+    "YEM",
+    "MMR",
+    "SDN",
+    "ETH",
+    "NGA",
+    "COD",
+    "AFG",
+    "IRQ",
 ]
 
 _HOTSPOTS = {
@@ -74,15 +98,23 @@ _HOTSPOTS = {
 
 # ISO-3166 alpha-3 to country name for ACLED queries and display.
 _ISO3_TO_NAME = {
-    "SYR": "Syria", "UKR": "Ukraine", "YEM": "Yemen", "MMR": "Myanmar",
-    "SDN": "Sudan", "ETH": "Ethiopia", "NGA": "Nigeria", "COD": "DR Congo",
-    "AFG": "Afghanistan", "IRQ": "Iraq",
+    "SYR": "Syria",
+    "UKR": "Ukraine",
+    "YEM": "Yemen",
+    "MMR": "Myanmar",
+    "SDN": "Sudan",
+    "ETH": "Ethiopia",
+    "NGA": "Nigeria",
+    "COD": "DR Congo",
+    "AFG": "Afghanistan",
+    "IRQ": "Iraq",
 }
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _risk_level(score: float) -> str:
     if score > 150:
@@ -94,11 +126,10 @@ def _risk_level(score: float) -> str:
     return "low"
 
 
-
-
 # ---------------------------------------------------------------------------
 # Function 1: Country Intelligence Brief
 # ---------------------------------------------------------------------------
+
 
 async def fetch_country_brief(
     fetcher: Fetcher,
@@ -150,7 +181,9 @@ async def fetch_country_brief(
                         except (ValueError, TypeError):
                             pass
         except (KeyError, TypeError, IndexError) as exc:
-            logger.warning("Failed to parse World Bank GDP for %s: %s", country_code, exc)
+            logger.warning(
+                "Failed to parse World Bank GDP for %s: %s", country_code, exc
+            )
         return values
 
     async def _fetch_inflation() -> list:
@@ -182,10 +215,12 @@ async def fetch_country_brief(
                         except (ValueError, TypeError):
                             pass
         except (KeyError, TypeError, IndexError) as exc:
-            logger.warning("Failed to parse World Bank inflation for %s: %s", country_code, exc)
+            logger.warning(
+                "Failed to parse World Bank inflation for %s: %s", country_code, exc
+            )
         return values
 
-    async def _fetch_acled_count() -> int:
+    async def _fetch_acled_count() -> tuple[int, str | None]:
         start_date = (now - timedelta(days=30)).strftime("%Y-%m-%d")
         end_date = now.strftime("%Y-%m-%d")
 
@@ -201,15 +236,18 @@ async def fetch_country_brief(
             cache_ttl=900,
         )
         if data is None:
-            return 0
+            # 0 here is ambiguous between "queried, genuinely zero events"
+            # and "the fetch failed" — surface the reason via data_gaps
+            # below instead of letting the caller assume peace.
+            return 0, await acled_failure_reason(data)
 
         # ACLED returns a count field when limit=0
         try:
-            return int(data.get("count", len(data.get("data", []))))
+            return int(data.get("count", len(data.get("data", [])))), None
         except (ValueError, TypeError):
-            return len(data.get("data", []))
+            return len(data.get("data", [])), None
 
-    gdp_values, inflation_values, event_count = await asyncio.gather(
+    gdp_values, inflation_values, (event_count, acled_gap) = await asyncio.gather(
         _fetch_gdp(),
         _fetch_inflation(),
         _fetch_acled_count(),
@@ -260,6 +298,7 @@ async def fetch_country_brief(
             "recent_events": event_count,
         },
         "llm_available": llm_available,
+        "data_gaps": [acled_gap] if acled_gap else [],
         "source": "country-intelligence",
         "timestamp": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
@@ -268,6 +307,7 @@ async def fetch_country_brief(
 # ---------------------------------------------------------------------------
 # Function 2: Country Risk Scores
 # ---------------------------------------------------------------------------
+
 
 async def fetch_risk_scores(
     fetcher: Fetcher,
@@ -303,9 +343,21 @@ async def fetch_risk_scores(
     )
 
     if data is None:
+        reason = await acled_failure_reason(data)
+        if reason == "acled_unconfigured":
+            return {
+                "error": "ACLED credentials not configured (ACLED_EMAIL + ACLED_PASSWORD)",
+                "note": "Free academic access at acleddata.com",
+                "source": "risk-analysis",
+                "timestamp": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            }
+        # Credentials are fine; the live fetch failed. Previously this
+        # branch was unreachable in practice for a configured deployment
+        # under outage — it fell through to the same "not configured"
+        # message, misdiagnosing a transient failure as a config error.
         return {
-            "error": "ACLED credentials not configured (ACLED_EMAIL + ACLED_PASSWORD)",
-            "note": "Free academic access at acleddata.com",
+            "error": "ACLED fetch failed (rate limited, API error, or malformed response)",
+            "degraded": True,
             "source": "risk-analysis",
             "timestamp": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
         }
@@ -322,15 +374,19 @@ async def fetch_risk_scores(
     for country_name, events_30d in country_counts.items():
         baseline_annual = _BASELINES.get(country_name, 500)
         monthly_baseline = baseline_annual / 12.0
-        risk_score = (events_30d / monthly_baseline) * 100 if monthly_baseline > 0 else 0.0
+        risk_score = (
+            (events_30d / monthly_baseline) * 100 if monthly_baseline > 0 else 0.0
+        )
 
-        countries.append({
-            "country": country_name,
-            "events_30d": events_30d,
-            "monthly_baseline": round(monthly_baseline, 1),
-            "risk_score": round(risk_score, 1),
-            "risk_level": _risk_level(risk_score),
-        })
+        countries.append(
+            {
+                "country": country_name,
+                "events_30d": events_30d,
+                "monthly_baseline": round(monthly_baseline, 1),
+                "risk_score": round(risk_score, 1),
+                "risk_level": _risk_level(risk_score),
+            }
+        )
 
     # Sort by risk_score descending, take top N
     countries.sort(key=lambda c: c["risk_score"], reverse=True)
@@ -347,6 +403,7 @@ async def fetch_risk_scores(
 # ---------------------------------------------------------------------------
 # Function 3: Country Instability Index
 # ---------------------------------------------------------------------------
+
 
 async def fetch_instability_index(
     fetcher: Fetcher,
@@ -394,7 +451,7 @@ async def _instability_single(
 
     # --- Parallel data gathering -------------------------------------------
 
-    async def _fetch_acled() -> list[dict]:
+    async def _fetch_acled() -> tuple[list[dict], str | None]:
         """Fetch ACLED events for this country."""
         data = await acled_query(
             fetcher,
@@ -408,12 +465,14 @@ async def _instability_single(
             cache_ttl=1800,
         )
         if data is None:
-            return []
-        return data.get("data", []) if isinstance(data, dict) else []
+            return [], await acled_failure_reason(data)
+        events = data.get("data", []) if isinstance(data, dict) else []
+        return events, None
 
     async def _fetch_outages() -> int:
         """Count internet outages mentioning this country."""
         from . import infrastructure
+
         result = await infrastructure.fetch_internet_outages(fetcher)
         count = 0
         for outage in result.get("outages", []):
@@ -427,32 +486,45 @@ async def _instability_single(
     async def _fetch_military() -> int:
         """Count military aircraft near this country."""
         _COUNTRY_BBOX = {
-            "SYR": "32,35,37,42", "UKR": "44,22,52,40",
-            "YEM": "12,42,19,55", "MMR": "10,92,28,101",
-            "SDN": "8,21,23,39", "ETH": "3,33,15,48",
-            "NGA": "4,3,14,15", "COD": "-13,12,5,31",
-            "AFG": "29,60,38,75", "IRQ": "29,39,37,49",
-            "IRN": "25,44,40,63", "ISR": "29,34,33,36",
-            "PSE": "31,34,32,35", "LBN": "33,35,34,37",
-            "TWN": "21,119,26,122", "PRK": "37,124,43,131",
+            "SYR": "32,35,37,42",
+            "UKR": "44,22,52,40",
+            "YEM": "12,42,19,55",
+            "MMR": "10,92,28,101",
+            "SDN": "8,21,23,39",
+            "ETH": "3,33,15,48",
+            "NGA": "4,3,14,15",
+            "COD": "-13,12,5,31",
+            "AFG": "29,60,38,75",
+            "IRQ": "29,39,37,49",
+            "IRN": "25,44,40,63",
+            "ISR": "29,34,33,36",
+            "PSE": "31,34,32,35",
+            "LBN": "33,35,34,37",
+            "TWN": "21,119,26,122",
+            "PRK": "37,124,43,131",
         }
         bbox = _COUNTRY_BBOX.get(country_code)
         if bbox is None:
             return 0
 
         from . import military as mil_mod
+
         result = await mil_mod.fetch_military_flights(fetcher, bbox=bbox)
         return result.get("count", 0)
 
     async def _fetch_news_velocity() -> int:
         """Estimate news velocity from GDELT."""
         from . import news
+
         result = await news.fetch_gdelt_search(
-            fetcher, query=country_name, mode="artlist", limit=100,
+            fetcher,
+            query=country_name,
+            mode="artlist",
+            limit=100,
         )
         return result.get("count", 0)
 
-    acled_events, outage_count, mil_count, news_vel = await asyncio.gather(
+    (acled_events, acled_gap), outage_count, mil_count, news_vel = await asyncio.gather(
         _fetch_acled(),
         _fetch_outages(),
         _fetch_military(),
@@ -524,6 +596,7 @@ async def _instability_single(
             "internet_outages": outage_count,
             "news_articles": news_vel,
         },
+        "data_gaps": [acled_gap] if acled_gap else [],
         "source": "instability-index-v2",
         "timestamp": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
@@ -547,8 +620,16 @@ async def _instability_multi(fetcher: Fetcher, now: datetime) -> dict:
     )
 
     if data is None:
+        reason = await acled_failure_reason(data)
+        if reason == "acled_unconfigured":
+            return {
+                "error": "ACLED credentials not configured (ACLED_EMAIL + ACLED_PASSWORD)",
+                "source": "instability-index-v2",
+                "timestamp": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            }
         return {
-            "error": "ACLED credentials not configured (ACLED_EMAIL + ACLED_PASSWORD)",
+            "error": "ACLED fetch failed (rate limited, API error, or malformed response)",
+            "degraded": True,
             "source": "instability-index-v2",
             "timestamp": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
         }
@@ -563,8 +644,11 @@ async def _instability_multi(fetcher: Fetcher, now: datetime) -> dict:
                 continue
             if country_name not in country_data:
                 country_data[country_name] = {
-                    "protests": 0, "riots": 0, "conflict": 0,
-                    "fatalities": 0, "total": 0,
+                    "protests": 0,
+                    "riots": 0,
+                    "conflict": 0,
+                    "fatalities": 0,
+                    "total": 0,
                 }
             cd = country_data[country_name]
             cd["total"] += 1
@@ -586,10 +670,16 @@ async def _instability_multi(fetcher: Fetcher, now: datetime) -> dict:
     results: list[dict] = []
     for code in _FOCUS_COUNTRIES:
         name = _ISO3_TO_NAME.get(code, code)
-        cd = country_data.get(name, {
-            "protests": 0, "riots": 0, "conflict": 0,
-            "fatalities": 0, "total": 0,
-        })
+        cd = country_data.get(
+            name,
+            {
+                "protests": 0,
+                "riots": 0,
+                "conflict": 0,
+                "fatalities": 0,
+                "total": 0,
+            },
+        )
         multiplier = get_event_multiplier(code)
 
         unrest_val = score_unrest(cd["protests"], cd["riots"])
@@ -615,12 +705,14 @@ async def _instability_multi(fetcher: Fetcher, now: datetime) -> dict:
             ucdp_floor=ucdp_floor,
         )
 
-        results.append({
-            "country_code": code,
-            "country_name": name,
-            **cii,
-            "events_30d": cd["total"],
-        })
+        results.append(
+            {
+                "country_code": code,
+                "country_name": name,
+                **cii,
+                "events_30d": cd["total"],
+            }
+        )
 
     results.sort(key=lambda r: r["instability_index"], reverse=True)
 
@@ -628,7 +720,7 @@ async def _instability_multi(fetcher: Fetcher, now: datetime) -> dict:
         "countries": results,
         "count": len(results),
         "note": "Multi-country CII v2 using ACLED unrest + conflict. "
-                "Use country_code for full 4-domain analysis.",
+        "Use country_code for full 4-domain analysis.",
         "source": "instability-index-v2",
         "timestamp": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
@@ -637,6 +729,7 @@ async def _instability_multi(fetcher: Fetcher, now: datetime) -> dict:
 # ---------------------------------------------------------------------------
 # Function 4: Signal Convergence
 # ---------------------------------------------------------------------------
+
 
 async def fetch_signal_convergence(
     fetcher: Fetcher,
@@ -741,6 +834,7 @@ async def fetch_signal_convergence(
 # Function 5: Focal Point Detection
 # ---------------------------------------------------------------------------
 
+
 async def fetch_focal_points(fetcher: Fetcher) -> dict:
     """Gather multi-source events and detect focal points.
 
@@ -757,7 +851,7 @@ async def fetch_focal_points(fetcher: Fetcher) -> dict:
     now = datetime.now(timezone.utc)
 
     # Import source modules for parallel data gathering
-    from . import news, military, infrastructure, conflict
+    from . import news, military, infrastructure
 
     async def _fetch_news_events() -> list[dict]:
         result = await news.fetch_news_feed(fetcher, limit=100)
@@ -769,13 +863,16 @@ async def fetch_focal_points(fetcher: Fetcher) -> dict:
             if matched_iso:
                 country_cfg = TIER1_COUNTRIES.get(matched_iso)
                 entity = country_cfg["name"] if country_cfg else matched_iso
-                events.append({
-                    "entity": entity,
-                    "type": "news",
-                    "timestamp": item.get("published") or now.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                    "country": entity,
-                    "weight": 1.0,
-                })
+                events.append(
+                    {
+                        "entity": entity,
+                        "type": "news",
+                        "timestamp": item.get("published")
+                        or now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                        "country": entity,
+                        "weight": 1.0,
+                    }
+                )
         return events
 
     async def _fetch_military_events() -> list[dict]:
@@ -785,13 +882,15 @@ async def fetch_focal_points(fetcher: Fetcher) -> dict:
             count = theater_data.get("count", 0)
             if count > 0:
                 for country in theater_data.get("countries", []):
-                    events.append({
-                        "entity": country,
-                        "type": "military",
-                        "timestamp": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                        "country": country,
-                        "weight": min(3.0, count / 10.0),
-                    })
+                    events.append(
+                        {
+                            "entity": country,
+                            "type": "military",
+                            "timestamp": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                            "country": country,
+                            "weight": min(3.0, count / 10.0),
+                        }
+                    )
         return events
 
     async def _fetch_outage_events() -> list[dict]:
@@ -802,16 +901,19 @@ async def fetch_focal_points(fetcher: Fetcher) -> dict:
             if isinstance(countries_list, list):
                 for c in countries_list:
                     if c:
-                        events.append({
-                            "entity": c,
-                            "type": "infrastructure",
-                            "timestamp": outage.get("start") or now.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                            "country": c,
-                            "weight": 2.0 if outage.get("is_ongoing") else 1.0,
-                        })
+                        events.append(
+                            {
+                                "entity": c,
+                                "type": "infrastructure",
+                                "timestamp": outage.get("start")
+                                or now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                                "country": c,
+                                "weight": 2.0 if outage.get("is_ongoing") else 1.0,
+                            }
+                        )
         return events
 
-    async def _fetch_protest_events() -> list[dict]:
+    async def _fetch_protest_events() -> tuple[list[dict], str | None]:
         start_date = (now - timedelta(days=7)).strftime("%Y-%m-%d")
         end_date = now.strftime("%Y-%m-%d")
         data = await acled_query(
@@ -831,16 +933,25 @@ async def fetch_focal_points(fetcher: Fetcher) -> dict:
             for ev in acled_list:
                 country = ev.get("country")
                 if country:
-                    events.append({
-                        "entity": country,
-                        "type": "protest",
-                        "timestamp": ev.get("event_date") or now.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                        "country": country,
-                        "weight": 1.0,
-                    })
-        return events
+                    events.append(
+                        {
+                            "entity": country,
+                            "type": "protest",
+                            "timestamp": ev.get("event_date")
+                            or now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                            "country": country,
+                            "weight": 1.0,
+                        }
+                    )
+            return events, None
+        return events, await acled_failure_reason(data)
 
-    news_events, mil_events, outage_events, protest_events = await asyncio.gather(
+    (
+        news_events,
+        mil_events,
+        outage_events,
+        (protest_events, acled_gap),
+    ) = await asyncio.gather(
         _fetch_news_events(),
         _fetch_military_events(),
         _fetch_outage_events(),
@@ -854,6 +965,7 @@ async def fetch_focal_points(fetcher: Fetcher) -> dict:
         "focal_points": focal_points,
         "count": len(focal_points),
         "total_events_analyzed": len(all_events),
+        "data_gaps": [acled_gap] if acled_gap else [],
         "source": "focal-point-analysis",
         "timestamp": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
@@ -862,6 +974,7 @@ async def fetch_focal_points(fetcher: Fetcher) -> dict:
 # ---------------------------------------------------------------------------
 # Function 6: Signal Summary
 # ---------------------------------------------------------------------------
+
 
 async def fetch_signal_summary(
     fetcher: Fetcher,
@@ -884,13 +997,16 @@ async def fetch_signal_summary(
 
     from . import conflict, infrastructure, military, displacement
 
-    async def _fetch_conflict() -> list[dict]:
+    async def _fetch_conflict() -> tuple[list[dict], str | None]:
         result = await conflict.fetch_acled_events(fetcher, days=7, limit=200)
-        return result.get("events", [])
+        return result.get("events", []), result.get("reason")
 
     async def _fetch_earthquakes() -> list[dict]:
         from . import seismology
-        result = await seismology.fetch_earthquakes(fetcher, min_magnitude=4.5, hours=168, limit=100)
+
+        result = await seismology.fetch_earthquakes(
+            fetcher, min_magnitude=4.5, hours=168, limit=100
+        )
         return result.get("earthquakes", [])
 
     async def _fetch_outages() -> list[dict]:
@@ -903,13 +1019,15 @@ async def fetch_signal_summary(
         for theater_data in result.get("theaters", {}).values():
             # Theater posture returns summary, not individual aircraft
             for c in theater_data.get("countries", []):
-                aircraft.append({
-                    "origin_country": c,
-                    "count": theater_data.get("count", 0),
-                })
+                aircraft.append(
+                    {
+                        "origin_country": c,
+                        "count": theater_data.get("count", 0),
+                    }
+                )
         return aircraft
 
-    async def _fetch_protests() -> list[dict]:
+    async def _fetch_protests() -> tuple[list[dict], str | None]:
         start_date = (now - timedelta(days=7)).strftime("%Y-%m-%d")
         end_date = now.strftime("%Y-%m-%d")
         data = await acled_query(
@@ -924,21 +1042,25 @@ async def fetch_signal_summary(
             cache_ttl=1800,
         )
         if data is None:
-            return []
+            return [], await acled_failure_reason(data)
         acled_list = data.get("data", []) if isinstance(data, dict) else []
         return [
             {"country": ev.get("country"), "event_type": ev.get("event_type")}
             for ev in acled_list
             if ev.get("country")
-        ]
+        ], None
 
     async def _fetch_displacement() -> list[dict]:
         result = await displacement.fetch_displacement_summary(fetcher)
         return result.get("by_origin", [])
 
     (
-        conflict_events, earthquake_data, outage_data,
-        military_data, protest_data, displacement_data,
+        (conflict_events, conflict_gap),
+        earthquake_data,
+        outage_data,
+        military_data,
+        (protest_data, protest_gap),
+        displacement_data,
     ) = await asyncio.gather(
         _fetch_conflict(),
         _fetch_earthquakes(),
@@ -967,14 +1089,14 @@ async def fetch_signal_summary(
         aggregated = filtered
 
     # Convert to list format
-    countries_list = [
-        {"country": name, **data}
-        for name, data in aggregated.items()
-    ]
+    countries_list = [{"country": name, **data} for name, data in aggregated.items()]
+
+    data_gaps = sorted({g for g in (conflict_gap, protest_gap) if g})
 
     return {
         "countries": countries_list[:50],
         "count": len(countries_list),
+        "data_gaps": data_gaps,
         "source": "signal-aggregation-v2",
         "timestamp": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
@@ -983,6 +1105,7 @@ async def fetch_signal_summary(
 # ---------------------------------------------------------------------------
 # Function 7: Temporal Anomaly Detection
 # ---------------------------------------------------------------------------
+
 
 async def fetch_temporal_anomalies(fetcher: Fetcher) -> dict:
     """Record observations and check for temporal anomalies.
@@ -1027,6 +1150,7 @@ async def fetch_temporal_anomalies(fetcher: Fetcher) -> dict:
         cache_key="intel:temporal:acled:global:7d",
         cache_ttl=1800,
     )
+    acled_gap = None
     if data is not None:
         country_counts: dict[str, int] = {}
         events_list = data.get("data", []) if isinstance(data, dict) else []
@@ -1040,6 +1164,11 @@ async def fetch_temporal_anomalies(fetcher: Fetcher) -> dict:
             observations_recorded += 1
             if result is not None:
                 anomalies.append(result)
+    else:
+        # No ACLED observations were recorded this cycle — silently
+        # skipping (the prior behavior) makes a live outage indistinguishable
+        # from "nothing happened," which understates the anomaly count.
+        acled_gap = await acled_failure_reason(data)
 
     # Sort anomalies by z_score descending
     anomalies.sort(key=lambda a: a.get("z_score", 0), reverse=True)
@@ -1048,6 +1177,7 @@ async def fetch_temporal_anomalies(fetcher: Fetcher) -> dict:
         "anomalies": anomalies,
         "anomaly_count": len(anomalies),
         "observations_recorded": observations_recorded,
+        "data_gaps": [acled_gap] if acled_gap else [],
         "source": "temporal-anomaly-detection",
         "timestamp": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
@@ -1056,6 +1186,7 @@ async def fetch_temporal_anomalies(fetcher: Fetcher) -> dict:
 # ---------------------------------------------------------------------------
 # Function 8: Social Unrest Events (Protests + Riots)
 # ---------------------------------------------------------------------------
+
 
 def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     """Great-circle distance between two points in km."""
@@ -1116,8 +1247,16 @@ async def fetch_unrest_events(
     )
 
     if data is None:
+        reason = await acled_failure_reason(data)
+        if reason == "acled_unconfigured":
+            return {
+                "error": "ACLED credentials not configured (ACLED_EMAIL + ACLED_PASSWORD)",
+                "source": "acled-unrest",
+                "timestamp": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            }
         return {
-            "error": "ACLED credentials not configured (ACLED_EMAIL + ACLED_PASSWORD)",
+            "error": "ACLED fetch failed (rate limited, API error, or malformed response)",
+            "degraded": True,
             "source": "acled-unrest",
             "timestamp": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
         }
@@ -1143,19 +1282,21 @@ async def fetch_unrest_events(
         except (ValueError, TypeError):
             pass
 
-        parsed.append({
-            "event_date": ev.get("event_date"),
-            "event_type": ev.get("event_type"),
-            "sub_event_type": ev.get("sub_event_type"),
-            "country": ev.get("country"),
-            "admin1": ev.get("admin1"),
-            "location": ev.get("location"),
-            "latitude": lat,
-            "longitude": lon,
-            "fatalities": fat,
-            "actor1": ev.get("actor1"),
-            "notes": ev.get("notes"),
-        })
+        parsed.append(
+            {
+                "event_date": ev.get("event_date"),
+                "event_type": ev.get("event_type"),
+                "sub_event_type": ev.get("sub_event_type"),
+                "country": ev.get("country"),
+                "admin1": ev.get("admin1"),
+                "location": ev.get("location"),
+                "latitude": lat,
+                "longitude": lon,
+                "fatalities": fat,
+                "actor1": ev.get("actor1"),
+                "notes": ev.get("notes"),
+            }
+        )
 
     # Haversine deduplication: merge events within 50km on same day
     DEDUP_RADIUS_KM = 50.0
@@ -1201,6 +1342,7 @@ async def fetch_unrest_events(
 # Function 9: Hotspot Escalation Scoring
 # ---------------------------------------------------------------------------
 
+
 async def fetch_hotspot_escalation(fetcher: Fetcher) -> dict:
     """Score all 22 intel hotspots using multi-source signals.
 
@@ -1222,7 +1364,7 @@ async def fetch_hotspot_escalation(fetcher: Fetcher) -> dict:
     from . import military as mil_mod
 
     # Fetch global data once, then distribute to hotspots
-    async def _fetch_global_acled() -> list[dict]:
+    async def _fetch_global_acled() -> tuple[list[dict], str | None]:
         start_date = (now - timedelta(days=7)).strftime("%Y-%m-%d")
         end_date = now.strftime("%Y-%m-%d")
         data = await acled_query(
@@ -1236,8 +1378,9 @@ async def fetch_hotspot_escalation(fetcher: Fetcher) -> dict:
             cache_ttl=1800,
         )
         if data is None:
-            return []
-        return data.get("data", []) if isinstance(data, dict) else []
+            return [], await acled_failure_reason(data)
+        events = data.get("data", []) if isinstance(data, dict) else []
+        return events, None
 
     async def _fetch_global_military() -> list[dict]:
         # Use theater posture for global coverage
@@ -1252,13 +1395,18 @@ async def fetch_hotspot_escalation(fetcher: Fetcher) -> dict:
                     try:
                         lat = (float(parts[0]) + float(parts[2])) / 2
                         lon = (float(parts[1]) + float(parts[3])) / 2
-                        for _ in range(theater_data.get("count", 0) // max(1, len(theater_data.get("countries", [1])))):
-                            aircraft.append({"lat": lat, "lon": lon, "origin_country": ac})
+                        for _ in range(
+                            theater_data.get("count", 0)
+                            // max(1, len(theater_data.get("countries", [1])))
+                        ):
+                            aircraft.append(
+                                {"lat": lat, "lon": lon, "origin_country": ac}
+                            )
                     except (ValueError, TypeError):
                         pass
         return aircraft
 
-    acled_events, military_data = await asyncio.gather(
+    (acled_events, acled_gap), military_data = await asyncio.gather(
         _fetch_global_acled(),
         _fetch_global_military(),
     )
@@ -1281,7 +1429,10 @@ async def fetch_hotspot_escalation(fetcher: Fetcher) -> dict:
                 ev_lon = float(ev.get("longitude", 0))
             except (ValueError, TypeError):
                 continue
-            if abs(ev_lat - hs_lat) <= RADIUS_DEG and abs(ev_lon - hs_lon) <= RADIUS_DEG:
+            if (
+                abs(ev_lat - hs_lat) <= RADIUS_DEG
+                and abs(ev_lon - hs_lon) <= RADIUS_DEG
+            ):
                 event_type = (ev.get("event_type") or "").lower()
                 if "protest" in event_type:
                     protest_count += 1
@@ -1297,14 +1448,20 @@ async def fetch_hotspot_escalation(fetcher: Fetcher) -> dict:
         for ac in military_data:
             ac_lat = ac.get("lat", 0)
             ac_lon = ac.get("lon", 0)
-            if abs(ac_lat - hs_lat) <= RADIUS_DEG and abs(ac_lon - hs_lon) <= RADIUS_DEG:
+            if (
+                abs(ac_lat - hs_lat) <= RADIUS_DEG
+                and abs(ac_lon - hs_lon) <= RADIUS_DEG
+            ):
                 mil_count += 1
 
         hotspot_signals[hs_name] = {
-            "news_mentions": 0,  # Would require per-hotspot GDELT queries (expensive); baseline 0
+            # news_mentions/convergence_score are left unset (None via
+            # score_hotspot's default) rather than 0 — no per-hotspot
+            # GDELT query or geo-convergence signal is wired up yet, and a
+            # hardcoded 0 is indistinguishable from "measured, genuinely
+            # quiet." score_all_hotspots renormalizes around the gap.
             "military_count": mil_count,
             "conflict_events": conflict_count,
-            "convergence_score": 0,
             "fatalities": fatality_count,
             "protests": protest_count,
         }
@@ -1314,6 +1471,8 @@ async def fetch_hotspot_escalation(fetcher: Fetcher) -> dict:
     return {
         "hotspots": scored,
         "count": len(scored),
+        "unavailable_components": ["news", "convergence"],
+        "data_gaps": [acled_gap] if acled_gap else [],
         "source": "hotspot-escalation",
         "timestamp": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
@@ -1322,6 +1481,7 @@ async def fetch_hotspot_escalation(fetcher: Fetcher) -> dict:
 # ---------------------------------------------------------------------------
 # Function 10: Military Surge Detection
 # ---------------------------------------------------------------------------
+
 
 async def fetch_military_surge(fetcher: Fetcher) -> dict:
     """Detect military surge anomalies across sensitive regions.
@@ -1349,6 +1509,7 @@ async def fetch_military_surge(fetcher: Fetcher) -> dict:
         # Record total aircraft count in the region's matching theaters
         total = 0
         from ..analysis.surge import _THEATER_REGION_MAP
+
         for theater_name, mapped_regions in _THEATER_REGION_MAP.items():
             if region_name in mapped_regions:
                 total += theater_data.get(theater_name, {}).get("count", 0)
@@ -1420,11 +1581,13 @@ async def fetch_vessel_snapshot(fetcher: Fetcher) -> dict:
             # near the waterway (NGA warnings have lat/lon in text parsed elsewhere)
             # Use navarea as rough filter and keyword matching
             if _NAVAL_KEYWORDS.search(text):
-                naval_warnings.append({
-                    "id": warning.get("id"),
-                    "text_snippet": text[:200],
-                    "navarea": warning.get("navarea"),
-                })
+                naval_warnings.append(
+                    {
+                        "id": warning.get("id"),
+                        "text_snippet": text[:200],
+                        "navarea": warning.get("navarea"),
+                    }
+                )
 
             # Count all warnings in the general vicinity (any topic)
             total_nearby += 1
@@ -1440,15 +1603,17 @@ async def fetch_vessel_snapshot(fetcher: Fetcher) -> dict:
         else:
             status = "clear"
 
-        waterways.append({
-            "name": ww["name"],
-            "lat": ww_lat,
-            "lon": ww_lon,
-            "throughput": ww.get("throughput"),
-            "naval_warnings": naval_count,
-            "status": status,
-            "warning_details": naval_warnings[:5],
-        })
+        waterways.append(
+            {
+                "name": ww["name"],
+                "lat": ww_lat,
+                "lon": ww_lon,
+                "throughput": ww.get("throughput"),
+                "naval_warnings": naval_count,
+                "status": status,
+                "warning_details": naval_warnings[:5],
+            }
+        )
 
     return {
         "waterways": waterways,
@@ -1462,6 +1627,7 @@ async def fetch_vessel_snapshot(fetcher: Fetcher) -> dict:
 # ---------------------------------------------------------------------------
 # Function 12: Infrastructure Cascade Analysis
 # ---------------------------------------------------------------------------
+
 
 async def fetch_cascade_analysis(
     fetcher: Fetcher,
@@ -1493,11 +1659,13 @@ async def fetch_cascade_analysis(
     if corridor:
         # Simulate specific corridor disruption
         result = simulate_cascade([corridor], current_health=corridors_health)
-        scenarios.append({
-            "scenario": f"Disruption of {corridor}",
-            "corridors": [corridor],
-            **result,
-        })
+        scenarios.append(
+            {
+                "scenario": f"Disruption of {corridor}",
+                "corridors": [corridor],
+                **result,
+            }
+        )
     else:
         # Simulate each at_risk or disrupted corridor
         at_risk_corridors = [
@@ -1510,28 +1678,36 @@ async def fetch_cascade_analysis(
             # Individual scenarios
             for c in at_risk_corridors:
                 result = simulate_cascade([c], current_health=corridors_health)
-                scenarios.append({
-                    "scenario": f"Disruption of {c}",
-                    "corridors": [c],
-                    **result,
-                })
+                scenarios.append(
+                    {
+                        "scenario": f"Disruption of {c}",
+                        "corridors": [c],
+                        **result,
+                    }
+                )
 
             # Combined worst-case scenario
             if len(at_risk_corridors) >= 2:
-                result = simulate_cascade(at_risk_corridors, current_health=corridors_health)
-                scenarios.append({
-                    "scenario": "Combined disruption (worst case)",
-                    "corridors": at_risk_corridors,
-                    **result,
-                })
+                result = simulate_cascade(
+                    at_risk_corridors, current_health=corridors_health
+                )
+                scenarios.append(
+                    {
+                        "scenario": "Combined disruption (worst case)",
+                        "corridors": at_risk_corridors,
+                        **result,
+                    }
+                )
         else:
             # No at-risk corridors; simulate red_sea as a common scenario
             result = simulate_cascade(["red_sea"], current_health=corridors_health)
-            scenarios.append({
-                "scenario": "Hypothetical: Red Sea corridor disruption",
-                "corridors": ["red_sea"],
-                **result,
-            })
+            scenarios.append(
+                {
+                    "scenario": "Hypothetical: Red Sea corridor disruption",
+                    "corridors": ["red_sea"],
+                    **result,
+                }
+            )
 
     return {
         "scenarios": scenarios,
