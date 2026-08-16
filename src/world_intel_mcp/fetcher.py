@@ -151,7 +151,7 @@ class Fetcher:
             except (httpx.HTTPStatusError, httpx.RequestError, Exception) as exc:
                 last_error = exc
                 if attempt < self.max_retries:
-                    wait = min(2 ** attempt, 30)
+                    wait = min(2**attempt, 30)
                     logger.debug(
                         "Retry %d/%d for %s (%s), waiting %.1fs",
                         attempt + 1,
@@ -207,7 +207,7 @@ class Fetcher:
             except (httpx.HTTPStatusError, httpx.RequestError, Exception) as exc:
                 last_error = exc
                 if attempt < self.max_retries:
-                    await asyncio.sleep(min(2 ** attempt, 30))
+                    await asyncio.sleep(min(2**attempt, 30))
 
         self.breaker.record_failure(source)
         logger.warning("Text fetch failed for %s: %s", source, last_error)
@@ -225,11 +225,33 @@ class Fetcher:
         return await self.get_text(url, source, cache_key, cache_ttl, timeout=timeout)
 
     def _stale_fallback(self, cache_key: str, source: str) -> Any | None:
-        """Return stale (expired) cached data as last-known-good fallback."""
-        stale = self.cache.get_stale(cache_key)
-        if stale is not None:
-            logger.info("Serving stale cache for %s (key=%s)", source, cache_key)
-        return stale
+        """Return stale (expired) cached data as last-known-good fallback.
+
+        Per the module docstring's promise, dict responses are marked with
+        ``_stale=True`` and ``_stale_age_seconds`` so a caller (dashboard,
+        MCP tool consumer) can tell arbitrarily old data from a fresh
+        response instead of receiving it silently. Non-dict responses
+        (raw text/XML, lists) can't carry an inline marker the same way,
+        so the circuit breaker's per-source stale-serve count is the
+        signal there.
+        """
+        meta = self.cache.get_stale_meta(cache_key)
+        if meta is None:
+            return None
+        value, created_at = meta
+        age_seconds = max(0.0, time.time() - created_at)
+        logger.info(
+            "Serving stale cache for %s (key=%s, age=%.0fs)",
+            source,
+            cache_key,
+            age_seconds,
+        )
+        if isinstance(value, dict):
+            value["_stale"] = True
+            value["_stale_age_seconds"] = round(age_seconds, 1)
+        else:
+            self.breaker.record_stale_serve(source)
+        return value
 
     async def _source_throttle(self, source: str) -> None:
         """Enforce per-source rate limit from _SOURCE_RATE_LIMITS."""
