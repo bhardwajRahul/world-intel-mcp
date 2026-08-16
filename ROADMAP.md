@@ -2,7 +2,7 @@
 
 **Benchmark**: [koala73/worldmonitor](https://github.com/koala73/worldmonitor)
 **Updated**: 2026-06-04
-**Current tools**: 119 (118 intel + 1 status)
+**Current tools**: 120 (119 intel + 1 status)
 
 ---
 
@@ -20,7 +20,7 @@
 
 | Area | Finding | Status | Action |
 |------|---------|--------|--------|
-| MCP tool parity | 119 tools declared in `TOOLS`; 119 routed in `_dispatch()` | :white_check_mark: | Keep as an invariant |
+| MCP tool parity | 120 tools declared in `TOOLS`; 120 routed in `_dispatch()` | :white_check_mark: | Keep as an invariant |
 | Optional vector runtime | Missing `qdrant-client` / `fastembed` previously surfaced as runtime failures | :white_check_mark: Fixed | Vector features now degrade cleanly and report availability |
 | Base-environment test run | `pytest -q` fails collection without dev extras because `respx` is not installed | :yellow_circle: | Run `pip install -e ".[dev]"` before full-suite validation |
 | Core verification | 226 non-smoke tests pass with dev extras installed | :white_check_mark: | Full default `pytest` run |
@@ -461,17 +461,30 @@ filtered to the AOI's radius, with `data_gaps` for domains that can't be
 geographically scoped. `intel_aoi_escalation` reuses the existing
 `score_hotspot` scoring engine unmodified for a user AOI (#16).
 
+### Phase 21: Situation Brief over MCP (+1 = 120 tools)
+`intel_situation_brief`
+
+The cited situation brief (#15) was previously reachable only through the
+dashboard's SSE overview; MCP clients, the primary consumer this server
+exists for, couldn't call it. `intel_situation_brief` gathers a bounded
+server-side overview (earthquakes, military flights, ACLED conflict
+events, wildfires, cyber threats, disease outbreaks, news, space weather,
+strategic posture, alert digest, not the dashboard's full 47-source
+fan-out) and delegates to the existing, unmodified `fetch_situation_brief`
+for the AI-generated brief or its mechanically-cited fallback when Ollama
+is unreachable (#18).
+
 ---
 
 ## Summary
 
 | Category | Current | Notes |
 |----------|---------|-------|
-| Total MCP tools | 119 | 118 intelligence tools + `intel_status` |
-| Tool parity | 119 / 119 | `TOOLS` and `_dispatch()` are aligned |
+| Total MCP tools | 120 | 119 intelligence tools + `intel_status` |
+| Tool parity | 120 / 120 | `TOOLS` and `_dispatch()` are aligned |
 | Static datasets | 18 | Bases, ports, pipelines, nuclear, cables, datacenters, spaceports, minerals, exchanges, trade routes, cloud regions, financial centers |
 | RSS feeds | 119 | 24 categories |
-| Tests in repo | 321 | 303 non-smoke tests + 18 live smoke tests; full suite requires `.[dev]` |
+| Tests in repo | 327 | 309 non-smoke tests + 18 live smoke tests; full suite requires `.[dev]` |
 | Primary remaining gap | Architecture | `server.py` monolith remains the main refactor target |
 
-**Bottom line**: 119 tools across 30+ domains, with the roadmap now aligned to the live MCP registry. The main remaining gaps are full-environment test bootstrapping (`.[dev]`) and continued modularization of the monolithic `server.py` tool registry/dispatcher.
+**Bottom line**: 120 tools across 30+ domains, with the roadmap now aligned to the live MCP registry. The main remaining gaps are full-environment test bootstrapping (`.[dev]`) and continued modularization of the monolithic `server.py` tool registry/dispatcher.

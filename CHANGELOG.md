@@ -44,6 +44,16 @@
   store isn't available, the Trends and Timeline sections say so via
   `data_gaps` instead of rendering as an empty, falsely-quiet section
   (#15).
+- `intel_situation_brief` (+1 = 120 tools). The cited situation brief
+  (#15) was previously reachable only through the dashboard's SSE
+  overview; MCP clients, the primary consumer this server exists for,
+  couldn't call it at all. The new tool gathers a bounded server-side
+  overview (earthquakes, military flights, ACLED conflict events,
+  wildfires, cyber threats, disease outbreaks, news, space weather,
+  strategic posture, and the alert digest, not the dashboard's full
+  47-source fan-out), then delegates to the existing, unmodified
+  `fetch_situation_brief` for the AI-generated brief or its
+  mechanically-cited fallback when Ollama is unreachable (#18).
 
 ### Fixed
 - `_extract_metrics` (situation brief) read the earthquake event list under

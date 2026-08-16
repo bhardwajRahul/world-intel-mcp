@@ -12,6 +12,7 @@ reported without a citation rather than pointing at something that
 isn't really there.
 """
 
+import asyncio
 import logging
 import os
 import re
@@ -460,3 +461,115 @@ async def fetch_situation_brief(overview_data: dict) -> dict:
         "source": "situation-brief",
         "timestamp": _utc_now_iso(),
     }
+
+
+# ---------------------------------------------------------------------------
+# intel_situation_brief (MCP tool): bounded server-side overview
+# ---------------------------------------------------------------------------
+
+# The domains this tool gathers itself, matched against _extract_metrics'
+# keys. A bounded subset of the dashboard's full 47-source fan-out (issue
+# #18): the domains that carry the most weight in the brief (threat
+# posture, military, conflict, seismic/fire/cyber/health current events,
+# space weather, headlines), reusing existing analysis functions unchanged
+# rather than reimplementing their fan-out.
+_COMPACT_OVERVIEW_DOMAINS = {
+    "earthquakes": "Earthquakes",
+    "military_flights": "Military flights",
+    "acled_events": "Conflict events",
+    "wildfires": "Wildfires",
+    "cyber_threats": "Cyber threats",
+    "disease_outbreaks": "Disease outbreaks",
+    "news_feed": "News",
+    "space_weather": "Space weather",
+    "strategic_posture": "Strategic posture",
+    "alert_digest": "Alert digest",
+}
+
+
+async def _safe_fetch(coro, label: str) -> dict:
+    try:
+        result = await coro
+        return result if isinstance(result, dict) else {}
+    except Exception as exc:
+        logger.warning("Situation brief overview: %s failed: %s", label, exc)
+        return {"error": str(exc)}
+
+
+async def _gather_compact_overview(fetcher) -> dict:
+    """Fetch a bounded set of domains server-side, shaped like
+    `_fetch_overview()`'s output (for `_extract_metrics()` reuse), without
+    importing the dashboard's Starlette app or its full 47-source fan-out.
+    """
+    from ..sources import (
+        cyber,
+        health,
+        military,
+        news,
+        seismology,
+        space_weather,
+        wildfire,
+    )
+    from ..sources import conflict as conflict_src
+    from .alerts import fetch_alert_digest
+    from .posture import fetch_strategic_posture
+
+    (
+        earthquakes,
+        military_flights,
+        acled_events,
+        wildfires,
+        cyber_threats,
+        disease_outbreaks,
+        news_feed,
+        space_weather_data,
+        strategic_posture,
+        alert_digest,
+    ) = await asyncio.gather(
+        _safe_fetch(seismology.fetch_earthquakes(fetcher), "earthquakes"),
+        _safe_fetch(military.fetch_military_flights(fetcher), "military_flights"),
+        _safe_fetch(conflict_src.fetch_acled_events(fetcher), "acled_events"),
+        _safe_fetch(wildfire.fetch_wildfires(fetcher), "wildfires"),
+        _safe_fetch(cyber.fetch_cyber_threats(fetcher), "cyber_threats"),
+        _safe_fetch(health.fetch_disease_outbreaks(fetcher), "disease_outbreaks"),
+        _safe_fetch(news.fetch_news_feed(fetcher), "news_feed"),
+        _safe_fetch(space_weather.fetch_space_weather(fetcher), "space_weather"),
+        _safe_fetch(fetch_strategic_posture(fetcher), "strategic_posture"),
+        _safe_fetch(fetch_alert_digest(fetcher), "alert_digest"),
+    )
+
+    return {
+        "earthquakes": earthquakes,
+        "military_flights": military_flights,
+        "acled_events": acled_events,
+        "wildfires": wildfires,
+        "cyber_threats": cyber_threats,
+        "disease_outbreaks": disease_outbreaks,
+        "news_feed": news_feed,
+        "space_weather": space_weather_data,
+        "strategic_posture": strategic_posture,
+        "alert_digest": alert_digest,
+    }
+
+
+async def fetch_live_situation_brief(fetcher) -> dict:
+    """MCP-tool entry point for `intel_situation_brief` (issue #18).
+
+    Gathers a compact overview server-side (`_gather_compact_overview`,
+    ~8-10 domains rather than the dashboard's full 47-source fan-out) and
+    delegates to `fetch_situation_brief()` unchanged for the AI-generated
+    brief or its mechanically-cited fallback. A domain that fails to fetch
+    simply carries no citation in the result (the same honesty guarantee
+    `_extract_metrics` already provides for every caller of
+    `fetch_situation_brief`); it does not fail the whole tool call.
+
+    Args:
+        fetcher: Shared HTTP fetcher with caching and circuit breaking.
+
+    Returns:
+        The unmodified `fetch_situation_brief()` result: `brief`,
+        `ai_generated`, `model`, `metrics_snapshot`, `sources`, `cited`,
+        `source`, `timestamp`.
+    """
+    overview = await _gather_compact_overview(fetcher)
+    return await fetch_situation_brief(overview)

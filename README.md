@@ -6,7 +6,7 @@
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-green)](https://python.org)
 [![License](https://img.shields.io/badge/License-MIT-yellow)](LICENSE)
 
-Real-time global intelligence across **30+ domains** with **119 MCP tools**, a live ops-center dashboard, a CLI, and a **Qdrant vector store** for enterprise-grade semantic search across accumulated intelligence. All data comes from free, public APIs: no paid subscriptions required.
+Real-time global intelligence across **30+ domains** with **120 MCP tools**, a live ops-center dashboard, a CLI, and a **Qdrant vector store** for enterprise-grade semantic search across accumulated intelligence. All data comes from free, public APIs: no paid subscriptions required.
 
 Built for AI agents that need world awareness: market conditions, geopolitical risk, military posture, supply chain disruptions, cyber threats, and more — all queryable via the Model Context Protocol. The vector store enables natural language queries like *"military activity near Taiwan"* or *"cyber threats targeting healthcare"* across all historical data.
 
@@ -58,8 +58,9 @@ Built for AI agents that need world awareness: market conditions, geopolitical r
 | **Reports** | 1 | PDF/HTML multi-domain intelligence reports |
 | **Daily Digest** | 1 | Cited markdown morning brief: top events, headlines, trends, and timeline |
 | **AOI Geofences** | 5 | User-defined areas of interest: define/list/delete, a cited multi-domain brief, and hotspot escalation scoring for a user's own area |
+| **Situation Brief** | 1 | Cited situational awareness brief over MCP: bounded server-side overview synthesized via local Ollama, with a mechanically-cited fallback |
 
-**Total: 119 tools** across 30+ intelligence domains.
+**Total: 120 tools** across 30+ intelligence domains.
 
 ---
 
@@ -436,13 +437,18 @@ collector.py  (daemon)    ─┘
 | `intel_aoi_brief` | Cited brief for an AOI: earthquakes, military flights, wildfires, conflict events, aviation, nearby infrastructure, and news mentions, all filtered to the AOI's radius |
 | `intel_aoi_escalation` | Hotspot escalation scoring (same engine as the 22 built-in hotspots) applied to a user AOI |
 
+### Situation Brief (1)
+| Tool | Description |
+|------|-------------|
+| `intel_situation_brief` | Cited situational awareness brief, generated on demand over MCP: a bounded server-side overview (earthquakes, military flights, ACLED conflict events, wildfires, cyber threats, disease outbreaks, news, space weather, strategic posture, alert digest), synthesized via local Ollama or a mechanically-cited fallback when Ollama is unreachable |
+
 ---
 
 ## Watching your own area (geofences/AOIs)
 
 Static infrastructure results (bases, ports, nuclear, cables, datacenters, spaceports) draw on this repo's curated strategic datasets, which are global and deliberately sparse, not exhaustive local registries. A quiet AOI brief means nothing from those curated sets is in range, not that your area has no infrastructure.
 
-28 of the 119 tools take some geographic parameter, but before the AOI
+28 of the 120 tools take some geographic parameter, but before the AOI
 family only `intel_signal_convergence` accepted a real point-plus-radius,
 `intel_military_flights` took a bbox, and hotspot escalation scoring was
 restricted to the 22 hardcoded `INTEL_HOTSPOTS`. The `intel_aoi_*` tools
