@@ -810,6 +810,72 @@ async def test_fetch_acled_events_genuine_zero_has_no_error(
 
 
 # ---------------------------------------------------------------------------
+# News (GDELT search)
+# ---------------------------------------------------------------------------
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_fetch_gdelt_search_distinguishes_rate_limit_from_zero_hits(
+    fetcher: Fetcher, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #17: GDELT rate-limits at roughly one request per 5 seconds.
+    A 429 that exhausts every retry must not be byte-identical to a
+    genuine zero-hit search: same class as the ACLED defect fixed in #3.
+    Exercises the real Fetcher retry path via respx (not a monkeypatched
+    get_json) so the failure mode actually hit live (429) is what's under
+    test. The exponential backoff sleep is stubbed to keep the test fast;
+    that doesn't change what's exercised, only how long waiting for it
+    takes."""
+    import asyncio as asyncio_mod
+
+    from world_intel_mcp.sources.news import fetch_gdelt_search
+
+    async def _no_sleep(*args, **kwargs) -> None:
+        return None
+
+    monkeypatch.setattr(asyncio_mod, "sleep", _no_sleep)
+
+    respx.get(url__regex=r".*api\.gdeltproject\.org.*").mock(
+        return_value=httpx.Response(429, text="rate limited")
+    )
+
+    result = await fetch_gdelt_search(
+        fetcher, query="Pittsburgh", mode="artlist", limit=10
+    )
+
+    assert result.get("error") is not None
+    assert result.get("degraded") is True
+    assert result.get("reason") == "gdelt_fetch_failed"
+    # Additive-only: articles/count keep their normal shape (empty list / 0,
+    # not None) so existing callers that don't check "error" or "degraded"
+    # still iterate an empty list instead of crashing.
+    assert result["articles"] == []
+    assert result["count"] == 0
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_fetch_gdelt_search_genuine_zero_has_no_error(fetcher: Fetcher) -> None:
+    """A real zero-hit query (fetch succeeds, GDELT returns no articles)
+    must NOT be flagged as degraded: only actual fetch failures are."""
+    from world_intel_mcp.sources.news import fetch_gdelt_search
+
+    respx.get(url__regex=r".*api\.gdeltproject\.org.*").mock(
+        return_value=httpx.Response(200, json={"articles": []})
+    )
+
+    result = await fetch_gdelt_search(
+        fetcher, query="zzzznohitszzzz", mode="artlist", limit=10
+    )
+
+    assert result.get("error") is None
+    assert result.get("degraded") is None
+    assert result["articles"] == []
+    assert result["count"] == 0
+
+
+# ---------------------------------------------------------------------------
 # Hacker News
 # ---------------------------------------------------------------------------
 

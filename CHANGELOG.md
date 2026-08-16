@@ -53,6 +53,14 @@
   same field.
 - Test counts in the docs lagged the 0.2.0 regression tests (claimed 244
   total when 0.2.0 itself shipped 256). Corrected to the live count.
+- `fetch_gdelt_search` returned a clean zero-article payload when the
+  GDELT API call failed, byte-identical to a genuine zero-hit search:
+  same class as the ACLED defect fixed in 0.2.0 (#3). Observed live as a
+  429: GDELT asks for one request per 5 seconds. Failure paths now carry
+  `error`, `degraded`, and `reason` keys, keeping `articles`/`count` in
+  their normal empty shape; `intel_aoi_brief`'s news domain now surfaces
+  the failure as a `data_gap` instead of reading as "no news mentions"
+  (#17).
 
 ## 0.2.0 - 2026-08-16
 
