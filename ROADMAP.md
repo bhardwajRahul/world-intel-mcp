@@ -2,7 +2,7 @@
 
 **Benchmark**: [koala73/worldmonitor](https://github.com/koala73/worldmonitor)
 **Updated**: 2026-06-04
-**Current tools**: 113 (112 intel + 1 status)
+**Current tools**: 114 (113 intel + 1 status)
 
 ---
 
@@ -20,7 +20,7 @@
 
 | Area | Finding | Status | Action |
 |------|---------|--------|--------|
-| MCP tool parity | 113 tools declared in `TOOLS`; 113 routed in `_dispatch()` | :white_check_mark: | Keep as an invariant |
+| MCP tool parity | 114 tools declared in `TOOLS`; 114 routed in `_dispatch()` | :white_check_mark: | Keep as an invariant |
 | Optional vector runtime | Missing `qdrant-client` / `fastembed` previously surfaced as runtime failures | :white_check_mark: Fixed | Vector features now degrade cleanly and report availability |
 | Base-environment test run | `pytest -q` fails collection without dev extras because `respx` is not installed | :yellow_circle: | Run `pip install -e ".[dev]"` before full-suite validation |
 | Core verification | 226 non-smoke tests pass with dev extras installed | :white_check_mark: | Full default `pytest` run |
@@ -430,17 +430,31 @@ Added PDF/HTML intelligence report generation over the existing multi-domain dat
 
 Added retail fuel, residential natural gas, and electricity-rate tools to round out consumer energy monitoring alongside existing EIA crude, gas, FRED, and World Bank economic signals.
 
+### Phase 19: Cited Situation Briefs + Daily Digest (+1 = 114 tools)
+`intel_daily_digest`
+
+The situation brief (used by the dashboard, not itself a separate tool) now
+builds a numbered `sources` list while walking the overview data, and
+carries an honest `cited` flag: true only when the returned text actually
+references a real source number, so a brief where the model ignored the
+citation instruction is distinguishable from one that didn't. The new
+`intel_daily_digest` tool composes a cited markdown morning brief from
+current events across several domains plus, when the optional vector
+store is installed, recent trend detection and a timeline, degrading via
+`data_gaps` rather than an empty section when the vector store isn't
+available.
+
 ---
 
 ## Summary
 
 | Category | Current | Notes |
 |----------|---------|-------|
-| Total MCP tools | 113 | 112 intelligence tools + `intel_status` |
-| Tool parity | 113 / 113 | `TOOLS` and `_dispatch()` are aligned |
+| Total MCP tools | 114 | 113 intelligence tools + `intel_status` |
+| Tool parity | 114 / 114 | `TOOLS` and `_dispatch()` are aligned |
 | Static datasets | 18 | Bases, ports, pipelines, nuclear, cables, datacenters, spaceports, minerals, exchanges, trade routes, cloud regions, financial centers |
 | RSS feeds | 119 | 24 categories |
 | Tests in repo | 244 | 226 non-smoke tests + 18 live smoke tests; full suite requires `.[dev]` |
 | Primary remaining gap | Architecture | `server.py` monolith remains the main refactor target |
 
-**Bottom line**: 113 tools across 30+ domains, with the roadmap now aligned to the live MCP registry. The main remaining gaps are full-environment test bootstrapping (`.[dev]`) and continued modularization of the monolithic `server.py` tool registry/dispatcher.
+**Bottom line**: 114 tools across 30+ domains, with the roadmap now aligned to the live MCP registry. The main remaining gaps are full-environment test bootstrapping (`.[dev]`) and continued modularization of the monolithic `server.py` tool registry/dispatcher.

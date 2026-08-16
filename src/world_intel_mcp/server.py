@@ -34,6 +34,10 @@ Phase 18: PDF/HTML intelligence reports (+1 = 110 tools). WeasyPrint-based multi
           report generation covering 18 intelligence domains in parallel.
 Phase 19: Consumer energy signals (+3 = 113 tools). Retail fuel, residential natural gas,
           and electricity rates round out consumer energy monitoring.
+Phase 20: Cited situation briefs and intel_daily_digest (+1 = 114 tools). Situation briefs
+          now carry a numbered sources list and an honest cited flag; the new digest tool
+          composes a cited markdown morning brief, degrading via data_gaps when the vector
+          store is unavailable.
 """
 
 import asyncio
@@ -1731,6 +1735,12 @@ TOOLS: list[Tool] = [
             },
         },
     ),
+    # --- Daily Digest (1 tool) ---
+    Tool(
+        name="intel_daily_digest",
+        description="Cited markdown morning brief: top current events by domain (earthquakes, military, conflict, wildfires, cyber, health, air/traffic), recent headlines, and, when the optional vector store is installed, recent activity trends and a 24h timeline. Every listed item carries a [n] citation into a numbered sources list. Degrades honestly via data_gaps when the vector store or a domain fetch is unavailable, instead of showing an empty section as a quiet day.",
+        inputSchema={"type": "object", "properties": {}},
+    ),
     # --- Reports (1 tool) ---
     Tool(
         name="intel_generate_report",
@@ -2424,6 +2434,12 @@ async def _dispatch(name: str, arguments: dict[str, Any]) -> Any:
                 recent_hours=arguments.get("recent_hours", 6.0),
                 baseline_hours=arguments.get("baseline_hours", 48.0),
             )
+
+        # Daily Digest
+        case "intel_daily_digest":
+            from .analysis.daily_digest import fetch_daily_digest
+
+            return await fetch_daily_digest(fetcher, vector_store=_vector_store)
 
         # System
         # Reports
