@@ -454,7 +454,7 @@ available.
 | Tool parity | 114 / 114 | `TOOLS` and `_dispatch()` are aligned |
 | Static datasets | 18 | Bases, ports, pipelines, nuclear, cables, datacenters, spaceports, minerals, exchanges, trade routes, cloud regions, financial centers |
 | RSS feeds | 119 | 24 categories |
-| Tests in repo | 244 | 226 non-smoke tests + 18 live smoke tests; full suite requires `.[dev]` |
+| Tests in repo | 269 | 251 non-smoke tests + 18 live smoke tests; full suite requires `.[dev]` |
 | Primary remaining gap | Architecture | `server.py` monolith remains the main refactor target |
 
 **Bottom line**: 114 tools across 30+ domains, with the roadmap now aligned to the live MCP registry. The main remaining gaps are full-environment test bootstrapping (`.[dev]`) and continued modularization of the monolithic `server.py` tool registry/dispatcher.

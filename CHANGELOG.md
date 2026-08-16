@@ -30,6 +30,8 @@
   so the lookup always missed and `max_magnitude` was silently 0 in every
   brief ever generated. Found while wiring earthquake citations off the
   same field.
+- Test counts in the docs lagged the 0.2.0 regression tests (claimed 244
+  total when 0.2.0 itself shipped 256). Corrected to the live count.
 
 ## 0.2.0 - 2026-08-16
 
@@ -59,7 +61,7 @@ fixed, each with a regression test that fails against the old code.
   by repro, then fixed (#7).
 
 ### Added
-- Continuous integration: the 244-test suite (226 default, 18 live-network
+- Continuous integration: the test suite (238 passing at this release, 18 live-network
   smoke tests deselected) now runs on every push and pull request, Python
   3.11 and 3.12 (#11).
 - CONTRIBUTING.md, bug report and feature request templates (#12).
