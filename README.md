@@ -447,6 +447,23 @@ intel-collector --sources markets,cyber  # specific domains only
 intel-collector                        # single collection cycle
 ```
 
+### Running as a macOS launchd Service
+
+`scripts/collector-daemon.sh` manages the collector as a `launchd` agent so it
+survives reboots. It fills in `com.agentic.intel-collector.plist.template`
+with this checkout's own path (resolved from the script's own location, so
+it works from any clone) and installs the result to
+`~/Library/LaunchAgents/`.
+
+```bash
+scripts/collector-daemon.sh start    # install + load the launchd job
+scripts/collector-daemon.sh status   # check state and log info
+scripts/collector-daemon.sh logs     # tail stdout (logs err for stderr)
+scripts/collector-daemon.sh stop     # unload the launchd job
+scripts/collector-daemon.sh restart
+scripts/collector-daemon.sh render   # print the filled-in plist without installing it
+```
+
 ### Semantic Search Examples
 
 Once data accumulates, AI agents can query across all domains:

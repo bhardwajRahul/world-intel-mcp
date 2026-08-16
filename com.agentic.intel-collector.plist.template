@@ -7,7 +7,7 @@
 
     <key>ProgramArguments</key>
     <array>
-        <string>/Volumes/SSDRAID0/agentic-system/mcp-servers/world-intel-mcp/.venv/bin/python</string>
+        <string>__REPO_ROOT__/.venv/bin/python</string>
         <string>-m</string>
         <string>world_intel_mcp.collector</string>
         <string>--daemon</string>
@@ -16,7 +16,7 @@
     </array>
 
     <key>WorkingDirectory</key>
-    <string>/Volumes/SSDRAID0/agentic-system/mcp-servers/world-intel-mcp</string>
+    <string>__REPO_ROOT__</string>
 
     <key>RunAtLoad</key>
     <true/>
@@ -36,9 +36,9 @@
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
-        <string>/Volumes/SSDRAID0/agentic-system/mcp-servers/world-intel-mcp/.venv/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <string>__REPO_ROOT__/.venv/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
         <key>PYTHONPATH</key>
-        <string>/Volumes/SSDRAID0/agentic-system/mcp-servers/world-intel-mcp/src</string>
+        <string>__REPO_ROOT__/src</string>
         <key>WORLD_INTEL_LOG_LEVEL</key>
         <string>INFO</string>
     </dict>
