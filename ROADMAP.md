@@ -2,7 +2,7 @@
 
 **Benchmark**: [koala73/worldmonitor](https://github.com/koala73/worldmonitor)
 **Updated**: 2026-06-04
-**Current tools**: 114 (113 intel + 1 status)
+**Current tools**: 119 (118 intel + 1 status)
 
 ---
 
@@ -20,7 +20,7 @@
 
 | Area | Finding | Status | Action |
 |------|---------|--------|--------|
-| MCP tool parity | 114 tools declared in `TOOLS`; 114 routed in `_dispatch()` | :white_check_mark: | Keep as an invariant |
+| MCP tool parity | 119 tools declared in `TOOLS`; 119 routed in `_dispatch()` | :white_check_mark: | Keep as an invariant |
 | Optional vector runtime | Missing `qdrant-client` / `fastembed` previously surfaced as runtime failures | :white_check_mark: Fixed | Vector features now degrade cleanly and report availability |
 | Base-environment test run | `pytest -q` fails collection without dev extras because `respx` is not installed | :yellow_circle: | Run `pip install -e ".[dev]"` before full-suite validation |
 | Core verification | 226 non-smoke tests pass with dev extras installed | :white_check_mark: | Full default `pytest` run |
@@ -444,17 +444,34 @@ store is installed, recent trend detection and a timeline, degrading via
 `data_gaps` rather than an empty section when the vector store isn't
 available.
 
+### Phase 20: AOI Geofences (+5 = 119 tools)
+`intel_aoi_define`, `intel_aoi_list`, `intel_aoi_delete`, `intel_aoi_brief`, `intel_aoi_escalation`
+
+User-defined areas of interest (AOIs), the intel-community term for what
+consumer software calls a geofence. Before this phase, only
+`intel_signal_convergence` accepted a real point-plus-radius, only
+`intel_military_flights` took a bbox, and hotspot escalation scoring was
+restricted to the 22 hardcoded `INTEL_HOTSPOTS`. `intel_aoi_define`
+persists a named point-radius area in a dedicated table inside the
+existing SQLite cache database; `intel_aoi_brief` composes a cited view
+of earthquakes, military flights (bbox-derived), wildfires
+(region-mapped), ACLED conflict events, sampled aviation, nearby static
+infrastructure with distances in km, and news headline mentions, all
+filtered to the AOI's radius, with `data_gaps` for domains that can't be
+geographically scoped. `intel_aoi_escalation` reuses the existing
+`score_hotspot` scoring engine unmodified for a user AOI (#16).
+
 ---
 
 ## Summary
 
 | Category | Current | Notes |
 |----------|---------|-------|
-| Total MCP tools | 114 | 113 intelligence tools + `intel_status` |
-| Tool parity | 114 / 114 | `TOOLS` and `_dispatch()` are aligned |
+| Total MCP tools | 119 | 118 intelligence tools + `intel_status` |
+| Tool parity | 119 / 119 | `TOOLS` and `_dispatch()` are aligned |
 | Static datasets | 18 | Bases, ports, pipelines, nuclear, cables, datacenters, spaceports, minerals, exchanges, trade routes, cloud regions, financial centers |
 | RSS feeds | 119 | 24 categories |
-| Tests in repo | 269 | 251 non-smoke tests + 18 live smoke tests; full suite requires `.[dev]` |
+| Tests in repo | 321 | 303 non-smoke tests + 18 live smoke tests; full suite requires `.[dev]` |
 | Primary remaining gap | Architecture | `server.py` monolith remains the main refactor target |
 
-**Bottom line**: 114 tools across 30+ domains, with the roadmap now aligned to the live MCP registry. The main remaining gaps are full-environment test bootstrapping (`.[dev]`) and continued modularization of the monolithic `server.py` tool registry/dispatcher.
+**Bottom line**: 119 tools across 30+ domains, with the roadmap now aligned to the live MCP registry. The main remaining gaps are full-environment test bootstrapping (`.[dev]`) and continued modularization of the monolithic `server.py` tool registry/dispatcher.

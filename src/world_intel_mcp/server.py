@@ -38,6 +38,13 @@ Phase 20: Cited situation briefs and intel_daily_digest (+1 = 114 tools). Situat
           now carry a numbered sources list and an honest cited flag; the new digest tool
           composes a cited markdown morning brief, degrading via data_gaps when the vector
           store is unavailable.
+Phase 21: AOI geofences (+5 = 119 tools). intel_aoi_define/list/delete persist named
+          point-radius areas in a dedicated table of the shared cache database.
+          intel_aoi_brief composes a cited, radius-filtered view of earthquakes, military
+          flights, wildfires, ACLED conflict events, sampled aviation, nearby static
+          infrastructure, and news mentions for a user's own area, with data_gaps for
+          domains that can't be scoped. intel_aoi_escalation reuses the existing hotspot
+          scoring unmodified for a user AOI (#16).
 """
 
 import asyncio
@@ -50,6 +57,7 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import Tool, TextContent
 
+from .analysis import aoi
 from .cache import Cache
 from .circuit_breaker import CircuitBreaker
 from .fetcher import Fetcher
@@ -97,6 +105,10 @@ logger = logging.getLogger("world-intel-mcp")
 server = Server("world-intel-mcp")
 cache = Cache()
 breaker = CircuitBreaker(failure_threshold=3, cooldown_seconds=300)
+# Same physical SQLite file the Cache above resolved to (fallback path
+# included); see analysis/aoi.py's module docstring for why AOIs live in
+# a dedicated table there rather than as Cache entries.
+_aoi_store = aoi.AOIStore(cache.db_path)
 
 # Vector store — optional, degrades gracefully if Qdrant unavailable.
 _vector_store = None
@@ -1741,6 +1753,71 @@ TOOLS: list[Tool] = [
         description="Cited markdown morning brief: top current events by domain (earthquakes, military, conflict, wildfires, cyber, health, air/traffic), recent headlines, and, when the optional vector store is installed, recent activity trends and a 24h timeline. Every listed item carries a [n] citation into a numbered sources list. Degrades honestly via data_gaps when the vector store or a domain fetch is unavailable, instead of showing an empty section as a quiet day.",
         inputSchema={"type": "object", "properties": {}},
     ),
+    # --- AOI Geofences (5 tools) ---
+    Tool(
+        name="intel_aoi_define",
+        description="Define a named area of interest (AOI/geofence): a point plus a radius in kilometers, persisted for intel_aoi_brief, intel_aoi_escalation, intel_aoi_list, and intel_aoi_delete. Required: name, lat (-90..90), lon (-180..180), radius_km (1..2000). Rejects a duplicate name (case-insensitive) politely, echoing the existing definition instead of overwriting it.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Unique AOI name (case-insensitive)",
+                },
+                "lat": {
+                    "type": "number",
+                    "description": "Center latitude, -90..90",
+                },
+                "lon": {
+                    "type": "number",
+                    "description": "Center longitude, -180..180",
+                },
+                "radius_km": {
+                    "type": "number",
+                    "description": "Radius in kilometers, 1..2000",
+                },
+            },
+            "required": ["name", "lat", "lon", "radius_km"],
+        },
+    ),
+    Tool(
+        name="intel_aoi_list",
+        description="List all user-defined areas of interest (AOIs/geofences).",
+        inputSchema={"type": "object", "properties": {}},
+    ),
+    Tool(
+        name="intel_aoi_delete",
+        description="Delete a user-defined area of interest by name.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "AOI name to delete"},
+            },
+            "required": ["name"],
+        },
+    ),
+    Tool(
+        name="intel_aoi_brief",
+        description="Cited brief for a user-defined AOI: earthquakes, military flights (bbox-derived), wildfires (region-mapped), ACLED conflict events, sampled aviation traffic, nearby static infrastructure (bases, ports, pipelines, nuclear, cables, datacenters, spaceports) with distances in km, and news headline mentions of the AOI name. Every item carries a [n] citation into a numbered sources list; data_gaps names every domain that could not be scoped to the AOI rather than omitting it silently. Required: name (must already be defined via intel_aoi_define).",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "AOI name"},
+            },
+            "required": ["name"],
+        },
+    ),
+    Tool(
+        name="intel_aoi_escalation",
+        description="Run the hotspot escalation scoring (baseline, military, conflict, social-unrest components; 0-100) on a user-defined AOI instead of only the 22 built-in intel hotspots. News-mention and geo-convergence components are not wired up and report null, same as intel_hotspot_escalation. Required: name (must already be defined via intel_aoi_define).",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "AOI name"},
+            },
+            "required": ["name"],
+        },
+    ),
     # --- Reports (1 tool) ---
     Tool(
         name="intel_generate_report",
@@ -2440,6 +2517,28 @@ async def _dispatch(name: str, arguments: dict[str, Any]) -> Any:
             from .analysis.daily_digest import fetch_daily_digest
 
             return await fetch_daily_digest(fetcher, vector_store=_vector_store)
+
+        # AOI Geofences
+        case "intel_aoi_define":
+            return aoi.define_aoi(
+                _aoi_store,
+                name=arguments.get("name"),
+                lat=arguments.get("lat"),
+                lon=arguments.get("lon"),
+                radius_km=arguments.get("radius_km"),
+            )
+        case "intel_aoi_list":
+            return aoi.list_aois(_aoi_store)
+        case "intel_aoi_delete":
+            return aoi.delete_aoi(_aoi_store, name=arguments.get("name"))
+        case "intel_aoi_brief":
+            return await aoi.fetch_aoi_brief(
+                fetcher, _aoi_store, name=arguments.get("name")
+            )
+        case "intel_aoi_escalation":
+            return await aoi.fetch_aoi_escalation(
+                fetcher, _aoi_store, name=arguments.get("name")
+            )
 
         # System
         # Reports

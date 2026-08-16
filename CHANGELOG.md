@@ -3,6 +3,27 @@
 ## Unreleased
 
 ### Added
+- User-defined areas of interest (AOIs/geofences): `intel_aoi_define`,
+  `intel_aoi_list`, `intel_aoi_delete`, `intel_aoi_brief`, and
+  `intel_aoi_escalation` (+5 = 119 tools). Before this, only
+  `intel_signal_convergence` accepted a real point-plus-radius,
+  `intel_military_flights` took a bbox, and hotspot escalation scoring was
+  restricted to the 22 hardcoded `INTEL_HOTSPOTS`. `intel_aoi_define`
+  persists a named point-radius area (validated: lat -90..90, lon
+  -180..180, radius_km 1..2000) in a dedicated `aois` table inside the
+  existing SQLite cache database, rejecting a duplicate (case-insensitive)
+  name by echoing the existing definition back instead of overwriting it.
+  `intel_aoi_brief` composes a cited view of earthquakes, military flights
+  (bbox derived from the radius), wildfires (region-mapped, since NASA
+  FIRMS has no point+radius query), ACLED conflict events, sampled
+  aviation traffic, nearby static infrastructure (bases, ports, pipelines,
+  nuclear facilities, undersea cables, datacenters, spaceports) with
+  distances in km, and news headline mentions of the AOI name, all
+  filtered to the AOI's radius, with `data_gaps` naming every domain that
+  couldn't be geographically scoped. `intel_aoi_escalation` reuses the
+  existing `score_hotspot` scoring engine unmodified, scoped to the AOI's
+  own radius rather than the fixed 2-degree window used for the 22
+  built-in hotspots (#16).
 - Situation briefs now cite their sources. `fetch_situation_brief` builds a
   numbered `sources` list while walking the overview data: domain, a short
   description or headline, a URL when the upstream item carries one, and a

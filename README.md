@@ -6,7 +6,7 @@
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-green)](https://python.org)
 [![License](https://img.shields.io/badge/License-MIT-yellow)](LICENSE)
 
-Real-time global intelligence across **30+ domains** with **114 MCP tools**, a live ops-center dashboard, a CLI, and a **Qdrant vector store** for enterprise-grade semantic search across accumulated intelligence. All data comes from free, public APIs: no paid subscriptions required.
+Real-time global intelligence across **30+ domains** with **119 MCP tools**, a live ops-center dashboard, a CLI, and a **Qdrant vector store** for enterprise-grade semantic search across accumulated intelligence. All data comes from free, public APIs: no paid subscriptions required.
 
 Built for AI agents that need world awareness: market conditions, geopolitical risk, military posture, supply chain disruptions, cyber threats, and more — all queryable via the Model Context Protocol. The vector store enables natural language queries like *"military activity near Taiwan"* or *"cyber threats targeting healthcare"* across all historical data.
 
@@ -57,8 +57,9 @@ Built for AI agents that need world awareness: market conditions, geopolitical r
 | **Cross-Domain Analytics** | 3 | Correlation, domain summary, trend detection |
 | **Reports** | 1 | PDF/HTML multi-domain intelligence reports |
 | **Daily Digest** | 1 | Cited markdown morning brief: top events, headlines, trends, and timeline |
+| **AOI Geofences** | 5 | User-defined areas of interest: define/list/delete, a cited multi-domain brief, and hotspot escalation scoring for a user's own area |
 
-**Total: 114 tools** across 30+ intelligence domains.
+**Total: 119 tools** across 30+ intelligence domains.
 
 ---
 
@@ -425,6 +426,58 @@ collector.py  (daemon)    ─┘
 | Tool | Description |
 |------|-------------|
 | `intel_generate_report` | Generate a PDF or HTML intelligence report covering 18 domains in parallel |
+
+### AOI Geofences (5)
+| Tool | Description |
+|------|-------------|
+| `intel_aoi_define` | Define a named area of interest: point + radius in km (1-2000) |
+| `intel_aoi_list` | List all user-defined AOIs |
+| `intel_aoi_delete` | Delete a user-defined AOI by name |
+| `intel_aoi_brief` | Cited brief for an AOI: earthquakes, military flights, wildfires, conflict events, aviation, nearby infrastructure, and news mentions, all filtered to the AOI's radius |
+| `intel_aoi_escalation` | Hotspot escalation scoring (same engine as the 22 built-in hotspots) applied to a user AOI |
+
+---
+
+## Watching your own area (geofences/AOIs)
+
+28 of the 119 tools take some geographic parameter, but before the AOI
+family only `intel_signal_convergence` accepted a real point-plus-radius,
+`intel_military_flights` took a bbox, and hotspot escalation scoring was
+restricted to the 22 hardcoded `INTEL_HOTSPOTS`. The `intel_aoi_*` tools
+let you name your own area (a city, a border region, a facility) and get
+the same cited, multi-domain treatment.
+
+Define an AOI once, then brief and score it on demand:
+
+```
+intel_aoi_define(name="Pittsburgh", lat=40.4406, lon=-79.9959, radius_km=50)
+intel_aoi_brief(name="Pittsburgh")
+intel_aoi_escalation(name="Pittsburgh")
+```
+
+`intel_aoi_brief` filters every geo-capable domain to the 50 km radius
+around Pittsburgh: earthquakes, military flights (bbox derived from the
+radius), wildfires (region-mapped, since NASA FIRMS has no point+radius
+query), ACLED conflict events, a sample of nearby aviation traffic,
+nearby static infrastructure (military bases, ports, pipelines, nuclear
+facilities, undersea cables, datacenters, spaceports) with distances in
+km, and news headline mentions of "Pittsburgh". Every item in the
+response carries a `[n]` citation into a numbered `sources` list, and
+`data_gaps` names any domain that couldn't be scoped to the AOI (for
+example, wildfires when the AOI falls outside NASA FIRMS's coverage
+regions, or conflict events when ACLED credentials aren't configured)
+instead of silently omitting it.
+
+`intel_aoi_escalation` runs the same baseline/military/conflict/social-
+unrest scoring engine that powers `intel_hotspot_escalation` for the 22
+built-in hotspots, but scoped to your AOI's own radius instead of a fixed
+2-degree window.
+
+AOIs persist in a dedicated table inside the same SQLite cache database
+the server already uses (`~/.cache/world-intel-mcp/cache.db` by default,
+or `$WORLD_INTEL_CACHE_DB`), so a scheduled agent can watch any named
+area across restarts with `intel_aoi_list` / `intel_aoi_delete` to manage
+them.
 
 ---
 
