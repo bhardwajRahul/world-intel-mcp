@@ -440,6 +440,8 @@ collector.py  (daemon)    ─┘
 
 ## Watching your own area (geofences/AOIs)
 
+Static infrastructure results (bases, ports, nuclear, cables, datacenters, spaceports) draw on this repo's curated strategic datasets, which are global and deliberately sparse, not exhaustive local registries. A quiet AOI brief means nothing from those curated sets is in range, not that your area has no infrastructure.
+
 28 of the 119 tools take some geographic parameter, but before the AOI
 family only `intel_signal_convergence` accepted a real point-plus-radius,
 `intel_military_flights` took a bbox, and hotspot escalation scoring was
