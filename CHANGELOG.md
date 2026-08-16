@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 - 2026-08-16
+
+Briefs that show their work, and areas you define yourself.
 
 ### Added
 - User-defined areas of interest (AOIs/geofences): `intel_aoi_define`,
