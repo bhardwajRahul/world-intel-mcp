@@ -493,6 +493,33 @@ async def test_fetch_aoi_brief_reports_data_gap_for_unscopable_domain(
 
 
 @pytest.mark.asyncio
+async def test_fetch_aoi_brief_reports_data_gap_when_gdelt_fails(
+    fetcher, aoi_store_with_pittsburgh: AOIStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #17: a GDELT fetch failure (rate limit, API error) must
+    surface as a data_gap here, the same as every other domain in this
+    brief, not read as "no news mentions" the way it silently did
+    before fetch_gdelt_search() carried an honest error/degraded shape."""
+    _patch_all_domains(monkeypatch)
+
+    async def _broken_gdelt(fetcher, **kwargs):
+        return {
+            "error": "GDELT fetch failed (rate limited, API error, or malformed response)",
+            "degraded": True,
+            "reason": "gdelt_fetch_failed",
+            "articles": [],
+            "count": 0,
+        }
+
+    monkeypatch.setattr(news, "fetch_gdelt_search", _broken_gdelt)
+
+    result = await aoi.fetch_aoi_brief(fetcher, aoi_store_with_pittsburgh, "Pittsburgh")
+
+    assert any("News" in gap for gap in result["data_gaps"])
+    assert not any(s["domain"] == "news" for s in result["sources"])
+
+
+@pytest.mark.asyncio
 async def test_fetch_aoi_brief_reports_data_gap_when_no_wildfire_region_overlaps(
     fetcher, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

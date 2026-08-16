@@ -762,7 +762,16 @@ async def fetch_gdelt_search(
 
     if data is None:
         logger.warning("GDELT API returned no data for query=%s mode=%s", query, mode)
+        # A live fetch failure (GDELT rate limits at roughly one request per
+        # 5 seconds, plus 500s and malformed payloads) must not be
+        # byte-identical to a genuine zero-hit search, same class as the
+        # ACLED defect fixed in #3. Keep articles/timeline/count in their
+        # normal empty shape so existing callers that don't check "error"
+        # or "degraded" still iterate an empty list rather than crashing.
         return {
+            "error": "GDELT fetch failed (rate limited, API error, or malformed response)",
+            "degraded": True,
+            "reason": "gdelt_fetch_failed",
             "articles": [] if mode == "artlist" else None,
             "timeline": None if mode == "artlist" else [],
             "count": 0,

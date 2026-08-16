@@ -45,6 +45,10 @@ Phase 21: AOI geofences (+5 = 119 tools). intel_aoi_define/list/delete persist n
           infrastructure, and news mentions for a user's own area, with data_gaps for
           domains that can't be scoped. intel_aoi_escalation reuses the existing hotspot
           scoring unmodified for a user AOI (#16).
+Phase 22: intel_situation_brief (+1 = 120 tools). The cited situation brief (#15) is now
+          reachable directly over MCP, not only through the dashboard: a bounded
+          server-side gather of ~8-10 domains feeds the existing, unmodified
+          fetch_situation_brief() (#18).
 """
 
 import asyncio
@@ -1818,6 +1822,12 @@ TOOLS: list[Tool] = [
             "required": ["name"],
         },
     ),
+    # --- Situation Brief (1 tool) ---
+    Tool(
+        name="intel_situation_brief",
+        description="Cited situational awareness brief, generated on demand over MCP (previously reachable only through the dashboard). Gathers a bounded server-side overview (earthquakes, military flights, ACLED conflict events, wildfires, cyber threats, disease outbreaks, news headlines, space weather, strategic posture, alert digest; not the dashboard's full 47-source fan-out), then synthesizes a 3-paragraph brief via local Ollama, or a mechanically-cited fallback summary when Ollama is unreachable. Returns brief, ai_generated, model, metrics_snapshot, a numbered sources list, and a cited flag that is true only when the brief text references a real source number.",
+        inputSchema={"type": "object", "properties": {}},
+    ),
     # --- Reports (1 tool) ---
     Tool(
         name="intel_generate_report",
@@ -2539,6 +2549,12 @@ async def _dispatch(name: str, arguments: dict[str, Any]) -> Any:
             return await aoi.fetch_aoi_escalation(
                 fetcher, _aoi_store, name=arguments.get("name")
             )
+
+        # Situation Brief
+        case "intel_situation_brief":
+            from .analysis.situation import fetch_live_situation_brief
+
+            return await fetch_live_situation_brief(fetcher)
 
         # System
         # Reports

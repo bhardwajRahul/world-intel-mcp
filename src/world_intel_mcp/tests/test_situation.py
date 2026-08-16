@@ -1,18 +1,40 @@
-"""Tests for analysis/situation.py: cited situation briefs (issue #15).
+"""Tests for analysis/situation.py: cited situation briefs (issue #15) and
+the intel_situation_brief MCP tool (issue #18).
 
 Uses respx to mock the Ollama endpoint, matching the network-edge-mocking
 style used elsewhere in this suite (see test_sources.py, test_intelligence.py).
+The tool-composition tests mock at the source-function boundary
+(monkeypatch), matching the pattern test_daily_digest.py established for
+this exact class of function: it composes existing sources/*.py and
+analysis/*.py fetch functions rather than making HTTP calls itself.
 """
 
 import re
+from pathlib import Path
 
 import httpx
 import pytest
 import respx
 
-from world_intel_mcp.analysis.situation import _extract_metrics, fetch_situation_brief
+from world_intel_mcp.analysis import alerts, posture
+from world_intel_mcp.analysis.situation import (
+    _extract_metrics,
+    fetch_live_situation_brief,
+    fetch_situation_brief,
+)
+from world_intel_mcp.sources import conflict as conflict_src
+from world_intel_mcp.sources import (
+    cyber,
+    health,
+    military,
+    news,
+    seismology,
+    space_weather,
+)
+from world_intel_mcp.sources import wildfire
 
 _OLLAMA_GENERATE = "http://localhost:11434/api/generate"
+_SERVER_PY = Path(__file__).resolve().parents[1] / "server.py"
 
 
 def _synthetic_overview() -> dict:
@@ -315,3 +337,214 @@ async def test_empty_overview_falls_back_uncited() -> None:
 
     assert result["sources"] == []
     assert result["cited"] is False
+
+
+# ---------------------------------------------------------------------------
+# intel_situation_brief tool: fetch_live_situation_brief (issue #18)
+# ---------------------------------------------------------------------------
+
+
+async def _fake_earthquakes(fetcher):
+    return {
+        "earthquakes": [
+            {
+                "id": "us1",
+                "magnitude": 6.4,
+                "place": "5km E of Nowhere",
+                "time": "2026-08-16T01:00:00Z",
+                "url": "https://earthquake.usgs.gov/us1",
+            },
+        ],
+        "count": 1,
+        "source": "usgs",
+    }
+
+
+async def _fake_military(fetcher):
+    return {
+        "aircraft": [],
+        "count": 4,
+        "source": "adsb.lol",
+        "timestamp": "2026-08-16T00:00:00Z",
+    }
+
+
+async def _fake_acled(fetcher, **kwargs):
+    return {
+        "events": [
+            {
+                "event_type": "Battle",
+                "location": "Somewhere",
+                "event_date": "2026-08-15",
+            },
+        ],
+        "count": 1,
+        "source": "acled",
+    }
+
+
+async def _fake_wildfires(fetcher):
+    return {
+        "fires_by_region": {"california": {"count": 3, "top_clusters": [{}, {}, {}]}},
+        "total_fires": 3,
+    }
+
+
+async def _fake_cyber(fetcher):
+    return {
+        "threats": [
+            {
+                "type": "c2_ip",
+                "indicator": "1.2.3.4",
+                "threat": "Emotet",
+                "severity": "critical",
+                "first_seen": "2026-08-15",
+            },
+        ],
+        "count": 1,
+    }
+
+
+async def _fake_health(fetcher):
+    return {
+        "items": [
+            {
+                "title": "Outbreak of Z",
+                "link": "https://who.int/z",
+                "published": "2026-08-15",
+                "is_high_concern": True,
+            },
+        ],
+        "high_concern_count": 1,
+    }
+
+
+async def _fake_news(fetcher):
+    return {
+        "items": [
+            {
+                "title": "Big headline",
+                "link": "https://news.example/a",
+                "published": "2026-08-16T00:00:00Z",
+            },
+        ],
+    }
+
+
+async def _fake_space_weather(fetcher):
+    return {"current_kp": 5.3, "timestamp": "2026-08-16T00:00:00Z"}
+
+
+async def _fake_strategic_posture(fetcher):
+    return {
+        "composite_score": 55,
+        "risk_level": "elevated",
+        "timestamp": "2026-08-16T00:00:00Z",
+    }
+
+
+async def _fake_alert_digest(fetcher):
+    return {
+        "alerts": [
+            {
+                "domain": "space",
+                "priority": "high",
+                "message": "Geomagnetic storm: Kp=6",
+            },
+        ],
+        "alert_count": 1,
+        "timestamp": "2026-08-16T00:00:00Z",
+    }
+
+
+def _patch_all_compact_domains(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(seismology, "fetch_earthquakes", _fake_earthquakes)
+    monkeypatch.setattr(military, "fetch_military_flights", _fake_military)
+    monkeypatch.setattr(conflict_src, "fetch_acled_events", _fake_acled)
+    monkeypatch.setattr(wildfire, "fetch_wildfires", _fake_wildfires)
+    monkeypatch.setattr(cyber, "fetch_cyber_threats", _fake_cyber)
+    monkeypatch.setattr(health, "fetch_disease_outbreaks", _fake_health)
+    monkeypatch.setattr(news, "fetch_news_feed", _fake_news)
+    monkeypatch.setattr(space_weather, "fetch_space_weather", _fake_space_weather)
+    monkeypatch.setattr(posture, "fetch_strategic_posture", _fake_strategic_posture)
+    monkeypatch.setattr(alerts, "fetch_alert_digest", _fake_alert_digest)
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_situation_brief_tool_returns_sources_and_cited(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The compact server-side gather feeds fetch_situation_brief()
+    unchanged: a real (mocked) Ollama response that cites a real source
+    number must come back ai_generated + cited, with a populated sources
+    list traceable to the mocked domains."""
+    _patch_all_compact_domains(monkeypatch)
+    respx.post(_OLLAMA_GENERATE).mock(
+        return_value=httpx.Response(
+            200,
+            json={"response": "Seismic activity ticked up [1] while alerts held [2]."},
+        )
+    )
+
+    result = await fetch_live_situation_brief(fetcher=None)
+
+    assert result["ai_generated"] is True
+    assert result["cited"] is True
+    assert result["sources"]
+    domains = {s["domain"] for s in result["sources"]}
+    assert domains == {
+        "earthquakes",
+        "military",
+        "conflict",
+        "wildfires",
+        "cyber",
+        "health",
+        "news",
+        "space_weather",
+        "posture",
+        "alerts",
+    }
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_situation_brief_tool_falls_back_when_ollama_unreachable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Issue #18: the fallback must hold through the tool path, not just
+    the already-tested fetch_situation_brief(overview) path. Blocks the
+    Ollama URL with respx (ConnectError) exactly like
+    test_fallback_brief_is_mechanically_cited does above."""
+    _patch_all_compact_domains(monkeypatch)
+    respx.post(_OLLAMA_GENERATE).mock(
+        side_effect=httpx.ConnectError("no ollama in test env")
+    )
+
+    result = await fetch_live_situation_brief(fetcher=None)
+
+    assert result["ai_generated"] is False
+    assert result["model"] == "fallback"
+    assert result["cited"] is True
+    assert result["sources"]
+    real_ns = {s["n"] for s in result["sources"]}
+    found_ns = {int(n) for n in re.findall(r"\[(\d+)\]", result["brief"])}
+    assert found_ns, "fallback brief carried no citations at all"
+    assert found_ns <= real_ns
+
+
+def test_intel_situation_brief_registered_and_dispatched() -> None:
+    """Structural parity check: the TOOLS/`_dispatch` 1:1 invariant this
+    repo maintains (see ROADMAP.md 'MCP tool parity') must hold for the
+    new tool. Reads server.py as text rather than importing the module,
+    matching test_daily_digest.py's and test_aoi.py's pattern (importing
+    world_intel_mcp.server opens a live Cache() at the default on-disk
+    path, which no other test in this suite triggers)."""
+    text = _SERVER_PY.read_text()
+
+    assert 'name="intel_situation_brief"' in text
+
+    dispatch_idx = text.index('case "intel_situation_brief":')
+    assert dispatch_idx > 0
+    dispatch_body = text[dispatch_idx : dispatch_idx + 300]
+    assert "fetch_live_situation_brief" in dispatch_body

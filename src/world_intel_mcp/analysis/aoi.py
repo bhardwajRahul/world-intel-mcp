@@ -717,8 +717,15 @@ async def fetch_aoi_brief(fetcher, store: AOIStore, name: Any) -> dict:
             )
 
     # News headline mentions -----------------------------------------------
-    articles = news_result.get("articles", []) if isinstance(news_result, dict) else []
-    counts["news"] = len(articles)
+    if isinstance(news_result, dict) and news_result.get("error"):
+        data_gaps.append(f"News: {news_result['error']}")
+        counts["news"] = 0
+        articles: list = []
+    else:
+        articles = (
+            news_result.get("articles", []) if isinstance(news_result, dict) else []
+        )
+        counts["news"] = len(articles)
     for art in articles[:10]:
         title = art.get("title")
         if not title:
