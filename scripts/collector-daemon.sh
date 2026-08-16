@@ -9,7 +9,9 @@
 
 set -euo pipefail
 
-PLIST_SRC="/Volumes/SSDRAID0/agentic-system/mcp-servers/world-intel-mcp/com.agentic.intel-collector.plist"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+PLIST_TEMPLATE="$REPO_ROOT/com.agentic.intel-collector.plist.template"
 PLIST="$HOME/Library/LaunchAgents/com.agentic.intel-collector.plist"
 LABEL="com.agentic.intel-collector"
 LOG="/tmp/intel-collector.log"
@@ -21,15 +23,25 @@ YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
 NC='\033[0m'
 
+# Fill in the plist template with this checkout's repo root and write it to
+# the given path (defaults to the LaunchAgents install location). Does not
+# touch launchctl; safe to call for inspection.
+render_plist() {
+    local out="${1:-$PLIST}"
+    if [ ! -f "$PLIST_TEMPLATE" ]; then
+        echo -e "${RED}Missing plist template: $PLIST_TEMPLATE${NC}" >&2
+        exit 1
+    fi
+    sed "s#__REPO_ROOT__#$REPO_ROOT#g" "$PLIST_TEMPLATE" > "$out"
+}
+
 case "${1:-help}" in
     start)
         if launchctl list "$LABEL" &>/dev/null; then
             echo -e "${YELLOW}Intel collector already running${NC}"
             exit 0
         fi
-        if [ ! -f "$PLIST" ]; then
-            cp "$PLIST_SRC" "$PLIST"
-        fi
+        render_plist "$PLIST"
         launchctl load "$PLIST"
         sleep 1
         if launchctl list "$LABEL" &>/dev/null; then
@@ -104,10 +116,15 @@ case "${1:-help}" in
         esac
         ;;
 
+    render)
+        OUT="${2:-/dev/stdout}"
+        render_plist "$OUT"
+        ;;
+
     help|*)
         echo "Intel Collector Daemon Control"
         echo ""
-        echo "Usage: $0 {start|stop|restart|status|logs}"
+        echo "Usage: $0 {start|stop|restart|status|logs|render}"
         echo ""
         echo "  start          Start the intel collector daemon"
         echo "  stop           Stop the intel collector daemon"
@@ -115,5 +132,8 @@ case "${1:-help}" in
         echo "  status         Show daemon state and log info"
         echo "  logs           Tail stdout log (follow mode)"
         echo "  logs err       Tail stderr log (follow mode)"
+        echo "  render [path]  Fill the plist template with this checkout's"
+        echo "                 repo root and print it (or write it to path)."
+        echo "                 Does not install or touch launchctl."
         ;;
 esac

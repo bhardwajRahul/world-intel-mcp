@@ -24,7 +24,7 @@ Built for AI agents that need world awareness: market conditions, geopolitical r
 | **Company Enrichment** | 1 | Yahoo Finance + GDELT + SEC + GitHub (composite profile) |
 | **Macro Composite** | 1 | Weighted 6-signal market verdict (Fear&Greed, VIX, sectors, DXY, BTC, yields) |
 | **Economic Indicators** | 6 | AAA fuel prices, EIA energy, FRED macro, World Bank |
-| **Central Banks** | 1 | 8 central bank policy rates |
+| **Central Banks** | 1 | 15 central bank policy rates |
 | **BTC Technicals** | 1 | SMA 50/200, golden/death cross, Mayer Multiple |
 | **Natural Disasters** | 2 | USGS earthquakes, NASA FIRMS wildfires |
 | **Environmental** | 2 | NASA EONET, GDACS disaster alerts |
@@ -34,7 +34,7 @@ Built for AI agents that need world awareness: market conditions, geopolitical r
 | **Infrastructure** | 4 | Cloudflare Radar, submarine cables, cascade analysis, cloud status |
 | **Maritime** | 2 | NGA navigation warnings, vessel snapshots |
 | **Aviation** | 2 | FAA airport delays, domestic flight snapshot |
-| **News & Media** | 3 | 80+ RSS feeds (4-tier), GDELT, trending keywords |
+| **News & Media** | 3 | 119 RSS feeds (4-tier), GDELT, trending keywords |
 | **Intelligence Analysis** | 8 | Signal convergence, focal points, instability index, risk scores, escalation |
 | **NLP Intelligence** | 4 | Entity extraction, event classification, news clustering, keyword spikes |
 | **Strategic Synthesis** | 4 | Strategic posture, world brief, fleet report, population exposure |
@@ -113,7 +113,7 @@ intel report -o brief.pdf    # custom output path
 intel report -s markets,cyber,earthquakes  # select sections
 ```
 
-Map-first ops center: Leaflet map with toggle-able layers (quakes, military, conflict, fires, convergence, nuclear, infrastructure), 35+ live SSE feeds, HUD bar, glassmorphic panels, per-source circuit breaker health.
+Map-first ops center: Leaflet map with toggle-able layers (quakes, military, conflict, fires, convergence, nuclear, infrastructure), 47 live SSE feeds, HUD bar, glassmorphic panels, per-source circuit breaker health.
 
 ### CLI
 
@@ -207,7 +207,7 @@ collector.py  (daemon)    ─┘
 ### Central Banks (1)
 | Tool | Description |
 |------|-------------|
-| `intel_central_bank_rates` | Policy rates for 8 major central banks |
+| `intel_central_bank_rates` | Policy rates for 15 major central banks |
 
 ### BTC Technicals (1)
 | Tool | Description |
@@ -275,7 +275,7 @@ collector.py  (daemon)    ─┘
 ### News & Media (3)
 | Tool | Description |
 |------|-------------|
-| `intel_news_feed` | 80+ global RSS feeds with 4-tier source ranking |
+| `intel_news_feed` | 119 global RSS feeds with 4-tier source ranking |
 | `intel_trending_keywords` | Trending terms with spike detection |
 | `intel_gdelt_search` | GDELT 2.0 global news search |
 
@@ -447,6 +447,23 @@ intel-collector --sources markets,cyber  # specific domains only
 intel-collector                        # single collection cycle
 ```
 
+### Running as a macOS launchd Service
+
+`scripts/collector-daemon.sh` manages the collector as a `launchd` agent so it
+survives reboots. It fills in `com.agentic.intel-collector.plist.template`
+with this checkout's own path (resolved from the script's own location, so
+it works from any clone) and installs the result to
+`~/Library/LaunchAgents/`.
+
+```bash
+scripts/collector-daemon.sh start    # install + load the launchd job
+scripts/collector-daemon.sh status   # check state and log info
+scripts/collector-daemon.sh logs     # tail stdout (logs err for stderr)
+scripts/collector-daemon.sh stop     # unload the launchd job
+scripts/collector-daemon.sh restart
+scripts/collector-daemon.sh render   # print the filled-in plist without installing it
+```
+
 ### Semantic Search Examples
 
 Once data accumulates, AI agents can query across all domains:
@@ -470,6 +487,8 @@ The vector store uses FastEmbed (ONNX-based, BAAI/bge-small-en-v1.5) for embeddi
 | `FRED_API_KEY` | No | Macro economic data (also used for yield curve) |
 | `OPENSKY_CLIENT_ID` | No | Military flight fallback |
 | `OPENSKY_CLIENT_SECRET` | No | Military flight fallback |
+| `OLLAMA_API_URL` | No | Ollama server for AI-generated briefs (default: `http://localhost:11434`) |
+| `OLLAMA_MODEL` | No | Ollama model for AI-generated briefs (default: `llama3.2`) |
 | `WORLD_INTEL_LOG_LEVEL` | No | Logging level (default: INFO) |
 
 Everything else uses free, unauthenticated public APIs.
@@ -480,7 +499,7 @@ Everything else uses free, unauthenticated public APIs.
 
 ```bash
 pip install -e ".[dev]"
-pytest                       # 186 tests
+pytest                       # 226 tests (244 total, 18 live-network smoke tests deselected by default)
 pytest --cov=world_intel_mcp # with coverage
 pytest tests/test_forex.py -v # single module
 ```

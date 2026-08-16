@@ -85,6 +85,7 @@ Only these unlock additional data sources (everything else works unauthenticated
 - `CLOUDFLARE_API_TOKEN` — internet outage data
 - `FRED_API_KEY` — macro economic data
 - `OPENSKY_CLIENT_ID` / `OPENSKY_CLIENT_SECRET` — military flight fallback
+- `OLLAMA_API_URL` / `OLLAMA_MODEL`: Ollama server and model for AI-generated briefs (default `http://localhost:11434` / `llama3.2`)
 
 ## Testing
 
