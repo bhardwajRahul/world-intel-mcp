@@ -24,7 +24,7 @@ Built for AI agents that need world awareness: market conditions, geopolitical r
 | **Company Enrichment** | 1 | Yahoo Finance + GDELT + SEC + GitHub (composite profile) |
 | **Macro Composite** | 1 | Weighted 6-signal market verdict (Fear&Greed, VIX, sectors, DXY, BTC, yields) |
 | **Economic Indicators** | 6 | AAA fuel prices, EIA energy, FRED macro, World Bank |
-| **Central Banks** | 1 | 8 central bank policy rates |
+| **Central Banks** | 1 | 15 central bank policy rates |
 | **BTC Technicals** | 1 | SMA 50/200, golden/death cross, Mayer Multiple |
 | **Natural Disasters** | 2 | USGS earthquakes, NASA FIRMS wildfires |
 | **Environmental** | 2 | NASA EONET, GDACS disaster alerts |
@@ -34,7 +34,7 @@ Built for AI agents that need world awareness: market conditions, geopolitical r
 | **Infrastructure** | 4 | Cloudflare Radar, submarine cables, cascade analysis, cloud status |
 | **Maritime** | 2 | NGA navigation warnings, vessel snapshots |
 | **Aviation** | 2 | FAA airport delays, domestic flight snapshot |
-| **News & Media** | 3 | 80+ RSS feeds (4-tier), GDELT, trending keywords |
+| **News & Media** | 3 | 119 RSS feeds (4-tier), GDELT, trending keywords |
 | **Intelligence Analysis** | 8 | Signal convergence, focal points, instability index, risk scores, escalation |
 | **NLP Intelligence** | 4 | Entity extraction, event classification, news clustering, keyword spikes |
 | **Strategic Synthesis** | 4 | Strategic posture, world brief, fleet report, population exposure |
@@ -113,7 +113,7 @@ intel report -o brief.pdf    # custom output path
 intel report -s markets,cyber,earthquakes  # select sections
 ```
 
-Map-first ops center: Leaflet map with toggle-able layers (quakes, military, conflict, fires, convergence, nuclear, infrastructure), 35+ live SSE feeds, HUD bar, glassmorphic panels, per-source circuit breaker health.
+Map-first ops center: Leaflet map with toggle-able layers (quakes, military, conflict, fires, convergence, nuclear, infrastructure), 47 live SSE feeds, HUD bar, glassmorphic panels, per-source circuit breaker health.
 
 ### CLI
 
@@ -207,7 +207,7 @@ collector.py  (daemon)    ─┘
 ### Central Banks (1)
 | Tool | Description |
 |------|-------------|
-| `intel_central_bank_rates` | Policy rates for 8 major central banks |
+| `intel_central_bank_rates` | Policy rates for 15 major central banks |
 
 ### BTC Technicals (1)
 | Tool | Description |
@@ -275,7 +275,7 @@ collector.py  (daemon)    ─┘
 ### News & Media (3)
 | Tool | Description |
 |------|-------------|
-| `intel_news_feed` | 80+ global RSS feeds with 4-tier source ranking |
+| `intel_news_feed` | 119 global RSS feeds with 4-tier source ranking |
 | `intel_trending_keywords` | Trending terms with spike detection |
 | `intel_gdelt_search` | GDELT 2.0 global news search |
 
@@ -499,7 +499,7 @@ Everything else uses free, unauthenticated public APIs.
 
 ```bash
 pip install -e ".[dev]"
-pytest                       # 186 tests
+pytest                       # 226 tests (244 total, 18 live-network smoke tests deselected by default)
 pytest --cov=world_intel_mcp # with coverage
 pytest tests/test_forex.py -v # single module
 ```
