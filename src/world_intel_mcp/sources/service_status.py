@@ -71,6 +71,7 @@ _SEVERITY_KEYWORDS: dict[str, str] = {
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -93,8 +94,15 @@ def _parse_published(entry: dict) -> str | None:
 
 
 def _classify_severity(title: str, summary: str) -> str:
-    """Classify incident severity from title and summary text."""
+    """Classify incident severity from title and summary text.
+
+    Resolution status outranks incident words: a 'Resolved: Major
+    outage' post-mortem is resolved, not an active critical incident
+    (scanning the keyword table in insertion order used to classify it
+    critical and inflate active_incidents)."""
     combined = f"{title} {summary}".lower()
+    if "resolved" in combined:
+        return "resolved"
     for keyword, severity in _SEVERITY_KEYWORDS.items():
         if keyword in combined:
             return severity
@@ -104,6 +112,7 @@ def _classify_severity(title: str, summary: str) -> str:
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
 
 async def fetch_service_status(
     fetcher: Fetcher,
@@ -145,7 +154,10 @@ async def fetch_service_status(
 
     all_incidents: list[dict] = []
 
-    async def _fetch_provider(feed: dict) -> list[dict]:
+    async def _fetch_provider(feed: dict) -> tuple[str, list[dict] | None]:
+        """Returns (provider, incidents), with None — not an empty list —
+        when the feed was unreachable: a dead feed must not be
+        shape-identical to a healthy provider with no incidents."""
         safe_name = feed["provider"].lower()
         xml_text = await fetcher.get_xml(
             feed["url"],
@@ -156,7 +168,7 @@ async def fetch_service_status(
 
         if xml_text is None:
             logger.debug("No data from %s status feed", feed["provider"])
-            return []
+            return (feed["provider"], None)
 
         parsed = feedparser.parse(xml_text)
         incidents: list[dict] = []
@@ -166,21 +178,28 @@ async def fetch_service_status(
             summary = entry.get("summary") or entry.get("description") or ""
             severity = _classify_severity(title, summary)
 
-            incidents.append({
-                "provider": feed["provider"],
-                "title": title,
-                "link": entry.get("link", ""),
-                "published": _parse_published(entry),
-                "summary": summary[:300] if len(summary) > 300 else summary,
-                "severity": severity,
-            })
+            incidents.append(
+                {
+                    "provider": feed["provider"],
+                    "title": title,
+                    "link": entry.get("link", ""),
+                    "published": _parse_published(entry),
+                    "summary": summary[:300] if len(summary) > 300 else summary,
+                    "severity": severity,
+                }
+            )
 
-        return incidents
+        return (feed["provider"], incidents)
 
     tasks = [_fetch_provider(f) for f in feeds]
     results = await asyncio.gather(*tasks)
-    for incidents in results:
+    unavailable_providers: list[str] = []
+    for provider_name, incidents in results:
+        if incidents is None:
+            unavailable_providers.append(provider_name)
+            continue
         all_incidents.extend(incidents)
+    unavailable_providers.sort()
 
     # Sort by published descending
     all_incidents.sort(key=lambda i: i.get("published") or "", reverse=True)
@@ -194,7 +213,7 @@ async def fetch_service_status(
         if inc.get("severity") not in ("resolved", "info", "unknown"):
             active_count += 1
 
-    return {
+    response = {
         "incidents": all_incidents,
         "count": len(all_incidents),
         "active_incidents": active_count,
@@ -203,3 +222,15 @@ async def fetch_service_status(
         "source": "service-status",
         "timestamp": _utc_now_iso(),
     }
+    if unavailable_providers:
+        # An unreachable feed is named, not silently folded into "no
+        # incidents": providers_checked means attempted, and
+        # unavailable_providers says which attempts got no data.
+        response["unavailable_providers"] = unavailable_providers
+        response["degraded"] = True
+        if len(unavailable_providers) == len(feeds):
+            response["error"] = "All status feeds unavailable: " + ", ".join(
+                unavailable_providers
+            )
+            response["reason"] = "status_feeds_unavailable"
+    return response

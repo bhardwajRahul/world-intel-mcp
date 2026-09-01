@@ -123,10 +123,10 @@ async def test_fetch_service_status_unknown_provider(fetcher: Fetcher) -> None:
 async def test_fetch_service_status_one_feed_down(
     fetcher: Fetcher, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A failing feed contributes zero incidents while others still report.
-    Observation (flagged in review, not fixed): the response does not say
-    WHICH provider's feed failed — a dead AWS feed is shape-identical to a
-    healthy AWS with no incidents."""
+    """A failing feed contributes zero incidents while others still report,
+    and the failure is NAMED: before this fix a dead AWS feed was
+    shape-identical to a healthy AWS with no incidents (the
+    silent-degradation class)."""
 
     async def _no_sleep(*args, **kwargs) -> None:
         return None
@@ -144,18 +144,21 @@ async def test_fetch_service_status_one_feed_down(
     result = await fetch_service_status(fetcher)
     assert result["count"] == 12  # 3 x 4 surviving providers
     assert "AWS" not in result["by_provider"]
-    assert "AWS" in result["providers_checked"]  # still claimed as checked
+    assert "AWS" in result["providers_checked"]  # attempted, and...
+    assert result["unavailable_providers"] == ["AWS"]  # ...named as down
+    assert result["degraded"] is True
+    assert "error" not in result  # partial failure is degraded, not an error
 
 
 @respx.mock
 @pytest.mark.asyncio
-async def test_resolved_incident_with_severity_words_counts_active(
+async def test_resolved_incident_with_severity_words_is_not_active(
     fetcher: Fetcher,
 ) -> None:
-    """Suspected bug (documented, not fixed): _SEVERITY_KEYWORDS is scanned
-    in insertion order and "major"/"outage" precede "resolved", so a
-    'Resolved: Major outage' post-mortem classifies as critical and inflates
-    active_incidents."""
+    """Regression: _SEVERITY_KEYWORDS is scanned in insertion order and
+    "major"/"outage" used to precede "resolved", so a 'Resolved: Major
+    outage' post-mortem classified as critical and inflated
+    active_incidents. Resolution status must outrank incident words."""
     rss = """<?xml version="1.0"?>
     <rss version="2.0"><channel><title>S</title>
     <item><title>Resolved: Major outage restored</title>
@@ -168,8 +171,8 @@ async def test_resolved_incident_with_severity_words_counts_active(
     )
 
     result = await fetch_service_status(fetcher, provider="github")
-    assert result["incidents"][0]["severity"] == "critical"  # current behavior
-    assert result["active_incidents"] == 1  # inflated
+    assert result["incidents"][0]["severity"] == "resolved"
+    assert result["active_incidents"] == 0
 
 
 def test_classify_severity() -> None:
@@ -196,3 +199,29 @@ def test_parse_published() -> None:
     assert _parse_published({"published": "raw-date"}) == "raw-date"
     assert _parse_published({"updated": "other-date"}) == "other-date"
     assert _parse_published({}) is None
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_fetch_service_status_all_feeds_down(
+    fetcher: Fetcher, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A total outage of every status feed is an error with a reason,
+    not an empty-but-healthy-looking response."""
+
+    async def _no_sleep(*args, **kwargs) -> None:
+        return None
+
+    monkeypatch.setattr(asyncio_mod, "sleep", _no_sleep)
+
+    for pattern in _FEED_PATTERNS.values():
+        respx.get(url__regex=pattern).mock(return_value=httpx.Response(500))
+
+    result = await fetch_service_status(fetcher)
+    assert result["count"] == 0
+    assert sorted(result["unavailable_providers"]) == sorted(
+        f["provider"] for f in _STATUS_FEEDS
+    )
+    assert result["degraded"] is True
+    assert result["reason"] == "status_feeds_unavailable"
+    assert "unavailable" in result["error"].lower()
