@@ -49,6 +49,14 @@ Phase 22: intel_situation_brief (+1 = 120 tools). The cited situation brief (#15
           reachable directly over MCP, not only through the dashboard: a bounded
           server-side gather of ~8-10 domains feeds the existing, unmodified
           fetch_situation_brief() (#18).
+Phase 23: Geofence hardening + change detection (+2 = 122 tools). AOI bounding boxes
+          split at the antimeridian instead of clamping (military fetches merge per-box
+          with icao24 dedup; one-box failures surface as partial-coverage data_gaps);
+          pipelines and undersea cables match on great-circle segment distance, not
+          endpoints only. intel_aoi_update renames/resizes an AOI in place;
+          intel_aoi_changes diffs each sweep against a stored per-AOI snapshot to
+          report what entered and left the fence, with an explicit baseline first run
+          and failed domains excluded from the diff rather than read as departures.
 """
 
 import asyncio
@@ -1822,6 +1830,44 @@ TOOLS: list[Tool] = [
             "required": ["name"],
         },
     ),
+    Tool(
+        name="intel_aoi_update",
+        description="Update a user-defined AOI in place: rename it and/or change its center or radius, without losing its identity. Required: name. Optional: new_name, lat, lon, radius_km (same validation as intel_aoi_define; at least one must be provided). A rename keeps the AOI's change-detection history; changing center or radius drops it, because the old baseline described a different area.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Current AOI name"},
+                "new_name": {
+                    "type": "string",
+                    "description": "New name (case-insensitive, must not collide)",
+                },
+                "lat": {
+                    "type": "number",
+                    "description": "New center latitude, -90..90",
+                },
+                "lon": {
+                    "type": "number",
+                    "description": "New center longitude, -180..180",
+                },
+                "radius_km": {
+                    "type": "number",
+                    "description": "New radius in kilometers, 1..2000",
+                },
+            },
+            "required": ["name"],
+        },
+    ),
+    Tool(
+        name="intel_aoi_changes",
+        description="What entered or left a user-defined AOI since the last sweep: geofence change detection over earthquakes, military flights, ACLED conflict events, wildfire clusters, and news mentions. The first call establishes a baseline (nothing is claimed to have entered or left); subsequent calls report new, departed, and unchanged items per domain. A domain whose fetch failed is reported in data_gaps and excluded from the diff (a failed fetch never reads as 'everything left'), keeping its last real observation for the next successful sweep. Sampled aviation is excluded by design: a 1-in-10 sample churns every sweep. Required: name (must already be defined via intel_aoi_define).",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "AOI name"},
+            },
+            "required": ["name"],
+        },
+    ),
     # --- Situation Brief (1 tool) ---
     Tool(
         name="intel_situation_brief",
@@ -2541,6 +2587,19 @@ async def _dispatch(name: str, arguments: dict[str, Any]) -> Any:
             return aoi.list_aois(_aoi_store)
         case "intel_aoi_delete":
             return aoi.delete_aoi(_aoi_store, name=arguments.get("name"))
+        case "intel_aoi_update":
+            return aoi.update_aoi(
+                _aoi_store,
+                name=arguments.get("name"),
+                new_name=arguments.get("new_name"),
+                lat=arguments.get("lat"),
+                lon=arguments.get("lon"),
+                radius_km=arguments.get("radius_km"),
+            )
+        case "intel_aoi_changes":
+            return await aoi.fetch_aoi_changes(
+                fetcher, _aoi_store, name=arguments.get("name")
+            )
         case "intel_aoi_brief":
             return await aoi.fetch_aoi_brief(
                 fetcher, _aoi_store, name=arguments.get("name")

@@ -61,9 +61,9 @@ def test_haversine_km_known_pair() -> None:
     assert dist == pytest.approx(3936, rel=0.01)
 
 
-def test_bbox_from_radius_km_widens_at_low_latitude_and_narrows_near_pole() -> None:
-    equator_box = aoi.bbox_from_radius_km(0.0, 0.0, 100.0)
-    polar_box = aoi.bbox_from_radius_km(85.0, 0.0, 100.0)
+def test_bboxes_widen_at_high_latitude() -> None:
+    equator_box = aoi.bboxes_from_radius_km(0.0, 0.0, 100.0)[0]
+    polar_box = aoi.bboxes_from_radius_km(85.0, 0.0, 100.0)[0]
     eq_lomin, eq_lomax = (
         float(equator_box.split(",")[1]),
         float(equator_box.split(",")[3]),
@@ -73,11 +73,11 @@ def test_bbox_from_radius_km_widens_at_low_latitude_and_narrows_near_pole() -> N
     assert (pl_lomax - pl_lomin) > (eq_lomax - eq_lomin)
 
 
-def test_bbox_from_radius_km_clamps_to_valid_ranges() -> None:
-    box = aoi.bbox_from_radius_km(89.5, 179.5, 2000.0)
-    lamin, lomin, lamax, lomax = (float(x) for x in box.split(","))
-    assert -90.0 <= lamin <= lamax <= 90.0
-    assert -180.0 <= lomin <= lomax <= 180.0
+def test_bboxes_stay_within_valid_ranges() -> None:
+    for box in aoi.bboxes_from_radius_km(89.5, 179.5, 2000.0):
+        lamin, lomin, lamax, lomax = (float(x) for x in box.split(","))
+        assert -90.0 <= lamin <= lamax <= 90.0
+        assert -180.0 <= lomin <= lomax <= 180.0
 
 
 def test_filter_by_radius_includes_near_excludes_far() -> None:
@@ -636,3 +636,722 @@ def test_aoi_store_instantiated_from_cache_db_path() -> None:
     WORLD_INTEL_CACHE_DB or the tempdir fallback)."""
     text = _SERVER_PY.read_text()
     assert "_aoi_store = aoi.AOIStore(cache.db_path)" in text
+
+
+# ---------------------------------------------------------------------------
+# Antimeridian-aware bounding boxes (v0.4 geofence hardening)
+# ---------------------------------------------------------------------------
+
+
+def test_bboxes_single_box_away_from_dateline() -> None:
+    boxes = aoi.bboxes_from_radius_km(_PGH_LAT, _PGH_LON, _PGH_RADIUS_KM)
+    assert len(boxes) == 1
+    lamin, lomin, lamax, lomax = (float(x) for x in boxes[0].split(","))
+    assert lamin < _PGH_LAT < lamax
+    assert lomin < _PGH_LON < lomax
+
+
+def test_bboxes_split_when_circle_crosses_dateline_eastward() -> None:
+    """An AOI at lon 179.5 with a 200 km radius extends past +180; the
+    old single-box clamp silently cut off everything on the far side of
+    the dateline. Two boxes must now cover both sides."""
+    boxes = aoi.bboxes_from_radius_km(52.0, 179.5, 200.0)
+    assert len(boxes) == 2
+    parsed = [tuple(float(x) for x in b.split(",")) for b in boxes]
+    for lamin, lomin, lamax, lomax in parsed:
+        assert -180.0 <= lomin <= lomax <= 180.0
+        assert -90.0 <= lamin <= lamax <= 90.0
+    # One box ends at +180, the other starts at -180.
+    assert any(lomax == 180.0 for _, _, _, lomax in parsed)
+    assert any(lomin == -180.0 for _, lomin, _, _ in parsed)
+    # A point just across the dateline (~35 km away) is inside some box.
+    assert any(
+        lomin <= -179.9 <= lomax and lamin <= 52.0 <= lamax
+        for lamin, lomin, lamax, lomax in parsed
+    )
+
+
+def test_bboxes_split_when_circle_crosses_dateline_westward() -> None:
+    boxes = aoi.bboxes_from_radius_km(-17.7, -179.5, 300.0)
+    assert len(boxes) == 2
+    parsed = [tuple(float(x) for x in b.split(",")) for b in boxes]
+    # A point just west of the dateline (Fiji side) is inside some box.
+    assert any(
+        lomin <= 179.9 <= lomax and lamin <= -17.7 <= lamax
+        for lamin, lomin, lamax, lomax in parsed
+    )
+
+
+def test_bboxes_full_longitude_band_near_pole() -> None:
+    """When the longitude half-width reaches 180 degrees the circle rings
+    the pole; one full-longitude box, not two overlapping ones."""
+    boxes = aoi.bboxes_from_radius_km(89.0, 10.0, 1500.0)
+    assert len(boxes) == 1
+    _, lomin, _, lomax = (float(x) for x in boxes[0].split(","))
+    assert lomin == -180.0
+    assert lomax == 180.0
+
+
+def test_overlapping_wildfire_regions_across_dateline() -> None:
+    """An AOI just EAST of the dateline near Fiji reaches across into the
+    oceania FIRMS box (which ends at lon 180). The old clamped math found
+    no overlap and reported a false 'no FIRMS coverage' gap."""
+    regions = aoi._overlapping_wildfire_regions(-17.7, -179.5, 300.0)
+    assert "oceania" in regions
+
+
+# ---------------------------------------------------------------------------
+# Great-circle segment distance (pipelines and cables as lines, not points)
+# ---------------------------------------------------------------------------
+
+
+def test_segment_distance_abeam_midpoint() -> None:
+    # 1 degree of latitude abeam an equatorial segment: ~111.19 km.
+    d = aoi.segment_distance_km(1.0, 0.0, 0.0, -1.0, 0.0, 1.0)
+    assert d == pytest.approx(111.19, rel=0.01)
+
+
+def test_segment_distance_clamps_beyond_end() -> None:
+    """A point past the far endpoint on the same great circle is NOT at
+    distance 0 (the infinite-great-circle answer); it is at the distance
+    to the endpoint."""
+    d = aoi.segment_distance_km(0.0, 20.0, 0.0, 0.0, 0.0, 10.0)
+    assert d == pytest.approx(aoi.haversine_km(0.0, 20.0, 0.0, 10.0), rel=1e-6)
+    assert d > 1000
+
+
+def test_segment_distance_clamps_before_start() -> None:
+    d = aoi.segment_distance_km(0.0, -10.0, 0.0, 0.0, 0.0, 10.0)
+    assert d == pytest.approx(aoi.haversine_km(0.0, -10.0, 0.0, 0.0), rel=1e-6)
+
+
+def test_segment_distance_degenerate_segment() -> None:
+    d = aoi.segment_distance_km(1.0, 1.0, 40.0, -80.0, 40.0, -80.0)
+    assert d == pytest.approx(aoi.haversine_km(1.0, 1.0, 40.0, -80.0), rel=1e-6)
+
+
+def test_segment_distance_across_dateline() -> None:
+    d = aoi.segment_distance_km(1.0, 180.0, 0.0, 179.0, 0.0, -179.0)
+    assert d == pytest.approx(111.19, rel=0.01)
+
+
+def test_nearby_pipelines_detects_midspan_crossing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The load-bearing improvement: a pipeline whose midspan passes
+    through the AOI but whose endpoints are both far away was invisible
+    to the old endpoint-only proximity check."""
+    from world_intel_mcp.config import geospatial as geo_cfg
+
+    monkeypatch.setattr(
+        geo_cfg,
+        "PIPELINES",
+        [
+            {
+                "name": "Test Midspan Line",
+                "route": "A-B",
+                "type": "oil",
+                "status": "operational",
+                "lat_start": 0.0,
+                "lon_start": -5.0,
+                "lat_end": 0.0,
+                "lon_end": 5.0,
+            }
+        ],
+    )
+    # AOI center 0.5 deg (~55.6 km) abeam the midspan; endpoints ~558 km away.
+    result = aoi.nearby_pipelines(0.5, 0.0, 100.0)
+    names = [p["name"] for p in result]
+    assert "Test Midspan Line" in names
+    assert result[0]["distance_km"] == pytest.approx(55.6, rel=0.02)
+
+
+def test_nearby_cables_detects_midspan_crossing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from world_intel_mcp.config import cables as cables_cfg
+
+    monkeypatch.setattr(
+        cables_cfg,
+        "UNDERSEA_CABLES",
+        [
+            {
+                "name": "Test Midspan Cable",
+                "status": "active",
+                "landing_points": [
+                    {"name": "West End", "lat": 0.0, "lon": -5.0},
+                    {"name": "East End", "lat": 0.0, "lon": 5.0},
+                ],
+            }
+        ],
+    )
+    result = aoi.nearby_cables(0.5, 0.0, 100.0)
+    assert any(c["name"] == "Test Midspan Cable" for c in result)
+    assert result[0]["distance_km"] == pytest.approx(55.6, rel=0.02)
+    # The nearest published landing point is still reported for context.
+    assert result[0]["nearest_landing_point"] in {"West End", "East End"}
+
+
+def test_nearby_pipelines_still_finds_endpoint_proximity() -> None:
+    # TAPS endpoint at Valdez must keep matching (regression guard).
+    result = aoi.nearby_pipelines(61.13, -146.35, 5.0)
+    assert "Trans-Alaska (TAPS)" in [p["name"] for p in result]
+
+
+# ---------------------------------------------------------------------------
+# AOIStore.update / update_aoi tool
+# ---------------------------------------------------------------------------
+
+
+def test_update_aoi_radius_only(store: AOIStore) -> None:
+    aoi.define_aoi(store, "Pittsburgh", _PGH_LAT, _PGH_LON, _PGH_RADIUS_KM)
+    result = aoi.update_aoi(store, "Pittsburgh", radius_km=120.0)
+    assert "error" not in result
+    assert result["aoi"]["radius_km"] == 120.0
+    assert result["aoi"]["lat"] == _PGH_LAT
+    assert result["previous"]["radius_km"] == _PGH_RADIUS_KM
+    assert store.get("Pittsburgh")["radius_km"] == 120.0
+
+
+def test_update_aoi_rename(store: AOIStore) -> None:
+    aoi.define_aoi(store, "Pittsburgh", _PGH_LAT, _PGH_LON, _PGH_RADIUS_KM)
+    result = aoi.update_aoi(store, "Pittsburgh", new_name="Steel City")
+    assert "error" not in result
+    assert store.get("Pittsburgh") is None
+    assert store.get("Steel City")["lat"] == _PGH_LAT
+
+
+def test_update_aoi_rename_collision_rejected(store: AOIStore) -> None:
+    aoi.define_aoi(store, "Pittsburgh", _PGH_LAT, _PGH_LON, _PGH_RADIUS_KM)
+    aoi.define_aoi(store, "Austin", 30.27, -97.74, 40.0)
+    result = aoi.update_aoi(store, "Pittsburgh", new_name="austin")
+    assert "error" in result
+    assert store.get("Pittsburgh") is not None
+
+
+def test_update_aoi_case_change_rename_of_itself_allowed(store: AOIStore) -> None:
+    aoi.define_aoi(store, "pittsburgh", _PGH_LAT, _PGH_LON, _PGH_RADIUS_KM)
+    result = aoi.update_aoi(store, "pittsburgh", new_name="Pittsburgh")
+    assert "error" not in result
+    assert store.get("Pittsburgh")["name"] == "Pittsburgh"
+
+
+def test_update_aoi_not_found(store: AOIStore) -> None:
+    assert "error" in aoi.update_aoi(store, "Nowhere", radius_km=10.0)
+
+
+def test_update_aoi_no_fields_is_an_error(store: AOIStore) -> None:
+    aoi.define_aoi(store, "Pittsburgh", _PGH_LAT, _PGH_LON, _PGH_RADIUS_KM)
+    assert "error" in aoi.update_aoi(store, "Pittsburgh")
+
+
+def test_update_aoi_invalid_merged_params_rejected(store: AOIStore) -> None:
+    aoi.define_aoi(store, "Pittsburgh", _PGH_LAT, _PGH_LON, _PGH_RADIUS_KM)
+    result = aoi.update_aoi(store, "Pittsburgh", lat=95.0)
+    assert "error" in result
+    assert store.get("Pittsburgh")["lat"] == _PGH_LAT
+
+
+# ---------------------------------------------------------------------------
+# fetch_aoi_changes: geofence change detection (enter/leave since last check)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_aoi_changes_first_run_is_baseline(
+    fetcher, aoi_store_with_pittsburgh: AOIStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _patch_all_domains(monkeypatch)
+    result = await aoi.fetch_aoi_changes(
+        fetcher, aoi_store_with_pittsburgh, "Pittsburgh"
+    )
+    assert result["baseline"] is True
+    # A baseline run must not claim anything entered or left.
+    for domain_changes in result["changes"].values():
+        assert domain_changes["new"] == []
+        assert domain_changes["departed"] == []
+
+
+@pytest.mark.asyncio
+async def test_aoi_changes_detects_new_and_departed(
+    fetcher, aoi_store_with_pittsburgh: AOIStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _patch_all_domains(monkeypatch)
+    await aoi.fetch_aoi_changes(fetcher, aoi_store_with_pittsburgh, "Pittsburgh")
+
+    # Second sweep: quake near1 is gone, near2 appeared; military unchanged.
+    async def _second_earthquakes(fetcher, **kwargs):
+        return {
+            "earthquakes": [
+                {
+                    "id": "near2",
+                    "magnitude": 4.1,
+                    "place": "near Pittsburgh again",
+                    "time": "2026-08-16T02:00:00Z",
+                    "latitude": _NEAR_LAT,
+                    "longitude": _NEAR_LON,
+                    "url": "https://earthquake.usgs.gov/near2",
+                }
+            ],
+            "count": 1,
+            "source": "usgs",
+        }
+
+    monkeypatch.setattr(seismology, "fetch_earthquakes", _second_earthquakes)
+    result = await aoi.fetch_aoi_changes(
+        fetcher, aoi_store_with_pittsburgh, "Pittsburgh"
+    )
+
+    assert result["baseline"] is False
+    eq = result["changes"]["earthquakes"]
+    assert [i["key"] for i in eq["new"]] == ["near2"]
+    assert [i["key"] for i in eq["departed"]] == ["near1"]
+    mil = result["changes"]["military_flights"]
+    assert mil["new"] == []
+    assert mil["departed"] == []
+    assert mil["unchanged"] == 1
+
+
+@pytest.mark.asyncio
+async def test_aoi_changes_error_domain_reports_gap_not_departures(
+    fetcher, aoi_store_with_pittsburgh: AOIStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The honesty invariant: a failed fetch must never read as 'everything
+    left the area'. The domain goes to data_gaps, its diff is skipped, and
+    its baseline slice survives for the next successful run."""
+    _patch_all_domains(monkeypatch)
+    await aoi.fetch_aoi_changes(fetcher, aoi_store_with_pittsburgh, "Pittsburgh")
+
+    async def _broken_earthquakes(fetcher, **kwargs):
+        return {"error": "USGS unavailable"}
+
+    monkeypatch.setattr(seismology, "fetch_earthquakes", _broken_earthquakes)
+    result = await aoi.fetch_aoi_changes(
+        fetcher, aoi_store_with_pittsburgh, "Pittsburgh"
+    )
+    assert any("Earthquakes" in gap for gap in result["data_gaps"])
+    assert "earthquakes" not in result["changes"]
+
+    # Recovery run: the original quake is still there; nothing new or
+    # departed versus the PRE-ERROR baseline.
+    monkeypatch.setattr(seismology, "fetch_earthquakes", _fake_earthquakes)
+    result = await aoi.fetch_aoi_changes(
+        fetcher, aoi_store_with_pittsburgh, "Pittsburgh"
+    )
+    eq = result["changes"]["earthquakes"]
+    assert eq["new"] == []
+    assert eq["departed"] == []
+    assert eq["unchanged"] == 1
+
+
+@pytest.mark.asyncio
+async def test_aoi_changes_aviation_excluded_from_diff(
+    fetcher, aoi_store_with_pittsburgh: AOIStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The 1-in-10 aviation sample is pure churn between sweeps; diffing
+    it would manufacture fake enter/leave events every run."""
+    _patch_all_domains(monkeypatch)
+    result = await aoi.fetch_aoi_changes(
+        fetcher, aoi_store_with_pittsburgh, "Pittsburgh"
+    )
+    assert "aviation" not in result["changes"]
+
+
+@pytest.mark.asyncio
+async def test_aoi_changes_not_found(fetcher, store: AOIStore) -> None:
+    result = await aoi.fetch_aoi_changes(fetcher, store, "Nowhere")
+    assert "error" in result
+
+
+def test_geometry_update_drops_snapshot(store: AOIStore) -> None:
+    """Moving or resizing an AOI invalidates its change baseline: the old
+    snapshot described a different piece of the planet."""
+    aoi.define_aoi(store, "Pittsburgh", _PGH_LAT, _PGH_LON, _PGH_RADIUS_KM)
+    store.save_snapshot("Pittsburgh", {"earthquakes": {"near1": "M3.2"}})
+    aoi.update_aoi(store, "Pittsburgh", radius_km=500.0)
+    assert store.get_snapshot("Pittsburgh") is None
+
+
+def test_rename_migrates_snapshot(store: AOIStore) -> None:
+    aoi.define_aoi(store, "Pittsburgh", _PGH_LAT, _PGH_LON, _PGH_RADIUS_KM)
+    store.save_snapshot("Pittsburgh", {"earthquakes": {"near1": "M3.2"}})
+    aoi.update_aoi(store, "Pittsburgh", new_name="Steel City")
+    snap = store.get_snapshot("Steel City")
+    assert snap is not None
+    assert snap["domains"]["earthquakes"] == {"near1": "M3.2"}
+
+
+def test_delete_aoi_also_deletes_snapshot(store: AOIStore) -> None:
+    aoi.define_aoi(store, "Pittsburgh", _PGH_LAT, _PGH_LON, _PGH_RADIUS_KM)
+    store.save_snapshot("Pittsburgh", {"earthquakes": {"near1": "M3.2"}})
+    store.delete("Pittsburgh")
+    assert store.get_snapshot("Pittsburgh") is None
+
+
+# ---------------------------------------------------------------------------
+# New tool registration parity
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "tool_name,fn_name",
+    [
+        ("intel_aoi_update", "aoi.update_aoi"),
+        ("intel_aoi_changes", "aoi.fetch_aoi_changes"),
+    ],
+)
+def test_new_aoi_tools_registered_and_dispatched(tool_name: str, fn_name: str) -> None:
+    text = _SERVER_PY.read_text()
+    assert f'name="{tool_name}"' in text
+    dispatch_idx = text.index(f'case "{tool_name}":')
+    dispatch_body = text[dispatch_idx : dispatch_idx + 300]
+    assert fn_name in dispatch_body
+
+
+# ---------------------------------------------------------------------------
+# Coverage completion for the v0.4 geofence edges. Deliberately NOT hit,
+# as defensive guards unreachable through the public paths that wrap them:
+# the non-dict continue in _fetch_military_merged (its inputs pass through
+# _safe_fetch, which always yields a dict).
+# ---------------------------------------------------------------------------
+
+
+def test_segment_distance_perpendicular_pole() -> None:
+    # P at the pole, equatorial segment: cross-track is exactly 90 deg,
+    # cos(xt) ~ 0, exercising the polar guard; distance is a quarter
+    # circumference (~10,007 km).
+    d = aoi.segment_distance_km(90.0, 0.0, 0.0, -10.0, 0.0, 10.0)
+    assert d == pytest.approx(10007, rel=0.01)
+
+
+def test_store_update_missing_aoi_raises() -> None:
+    import tempfile as _tf
+
+    s = AOIStore(Path(_tf.mkdtemp()) / "kx.db")
+    try:
+        with pytest.raises(KeyError):
+            s.update("Nowhere", radius_km=10.0)
+    finally:
+        s.close()
+
+
+def test_get_snapshot_with_corrupt_json_returns_none(store: AOIStore) -> None:
+    store.define("Pittsburgh", _PGH_LAT, _PGH_LON, _PGH_RADIUS_KM)
+    store._conn.execute(
+        "INSERT OR REPLACE INTO aoi_snapshots (name_key, taken_at, snapshot) "
+        "VALUES ('pittsburgh', 0, 'not json')"
+    )
+    store._conn.commit()
+    assert store.get_snapshot("Pittsburgh") is None
+
+
+@pytest.mark.parametrize("bad_name", [123, "", "   ", None])
+def test_name_validation_across_tools(bad_name, store: AOIStore, fetcher) -> None:
+    assert "error" in aoi.delete_aoi(store, bad_name)
+    assert "error" in aoi.update_aoi(store, bad_name, radius_km=10.0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_name", [123, "   "])
+async def test_name_validation_async_tools(bad_name, store: AOIStore, fetcher) -> None:
+    assert "error" in await aoi.fetch_aoi_brief(fetcher, store, bad_name)
+    assert "error" in await aoi.fetch_aoi_escalation(fetcher, store, bad_name)
+    assert "error" in await aoi.fetch_aoi_changes(fetcher, store, bad_name)
+
+
+def test_nearby_pipelines_endpoint_fallback_on_partial_coords(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pipeline missing one endpoint's coordinates can't be treated as
+    a segment; it falls back to whichever endpoint is placeable."""
+    from world_intel_mcp.config import geospatial as geo_cfg
+
+    monkeypatch.setattr(
+        geo_cfg,
+        "PIPELINES",
+        [
+            {
+                "name": "Half-Mapped Line",
+                "lat_start": None,
+                "lon_start": None,
+                "lat_end": 0.0,
+                "lon_end": 0.0,
+            },
+            {"name": "Unmappable Line"},
+        ],
+    )
+    result = aoi.nearby_pipelines(0.2, 0.0, 100.0)
+    names = [p["name"] for p in result]
+    assert "Half-Mapped Line" in names
+    assert "Unmappable Line" not in names
+
+
+def test_nearby_cables_skips_unplaceable_landing_points(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from world_intel_mcp.config import cables as cables_cfg
+
+    monkeypatch.setattr(
+        cables_cfg,
+        "UNDERSEA_CABLES",
+        [
+            {
+                "name": "Patchy Cable",
+                "status": "active",
+                "landing_points": [
+                    {"name": "Ghost", "lat": None, "lon": None},
+                    {"name": "Bad", "lat": "not-a-number", "lon": "x"},
+                    {"name": "Real", "lat": 0.0, "lon": 0.0},
+                ],
+            }
+        ],
+    )
+    result = aoi.nearby_cables(0.2, 0.0, 100.0)
+    assert result[0]["name"] == "Patchy Cable"
+    assert result[0]["nearest_landing_point"] == "Real"
+
+
+def test_wildfire_region_dedup_when_both_boxes_overlap_one_region(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No real FIRMS region spans the dateline today; patch one that does
+    so the both-boxes-same-region dedup guard is exercised."""
+    from world_intel_mcp.sources import wildfire
+
+    monkeypatch.setattr(wildfire, "REGIONS", {"global": "-180,-90,180,90"})
+    regions = aoi._overlapping_wildfire_regions(52.0, 179.9, 300.0)
+    assert regions == ["global"]
+
+
+@pytest.mark.asyncio
+async def test_wildfires_for_aoi_all_regions_error_and_non_dict(
+    fetcher, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = {"n": 0}
+
+    async def _flaky_wildfires(fetcher, region=None):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return "not-a-dict"
+        return {"error": f"FIRMS down for {region}"}
+
+    monkeypatch.setattr(wildfire, "fetch_wildfires", _flaky_wildfires)
+    result = await aoi._fetch_wildfires_for_aoi(
+        fetcher, ["north_america", "europe", "africa"]
+    )
+    assert "FIRMS down" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_safe_fetch_catches_raising_coroutine(fetcher) -> None:
+    async def _boom():
+        raise RuntimeError("upstream exploded")
+
+    result = await aoi._safe_fetch(_boom(), "boom")
+    assert result == {"error": "upstream exploded"}
+
+
+@pytest.mark.asyncio
+async def test_brief_data_gaps_for_eq_military_aviation_and_titleless_news(
+    fetcher, aoi_store_with_pittsburgh: AOIStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _patch_all_domains(monkeypatch)
+
+    async def _err(fetcher, **kwargs):
+        return {"error": "backend down"}
+
+    async def _titleless_gdelt(fetcher, **kwargs):
+        return {"articles": [{"url": "https://x.example/1", "title": ""}], "count": 1}
+
+    monkeypatch.setattr(seismology, "fetch_earthquakes", _err)
+    monkeypatch.setattr(military, "fetch_military_flights", _err)
+    monkeypatch.setattr(aviation, "fetch_domestic_flights", _err)
+    monkeypatch.setattr(news, "fetch_gdelt_search", _titleless_gdelt)
+
+    result = await aoi.fetch_aoi_brief(fetcher, aoi_store_with_pittsburgh, "Pittsburgh")
+    gaps = " | ".join(result["data_gaps"])
+    assert "Earthquakes" in gaps
+    assert "Military flights" in gaps
+    assert "Aviation" in gaps
+    # The titleless article is counted but produces no citation line.
+    assert result["counts"]["news"] == 1
+    assert not any(s["domain"] == "news" for s in result["sources"])
+
+
+@pytest.fixture
+def dateline_store(tmp_path: Path) -> AOIStore:
+    s = AOIStore(tmp_path / "dateline.db")
+    # Two bounding boxes (crosses lon 180).
+    s.define("Bering", 52.0, 179.8, 200.0)
+    yield s
+    s.close()
+
+
+def _per_bbox_military(fail_boxes: set[int]):
+    """Fake military fetch that errors for chosen box indexes and
+    returns one duplicated + one unique aircraft otherwise."""
+    seen: list[str] = []
+
+    async def _fake(fetcher, bbox=None):
+        seen.append(bbox)
+        idx = len(seen) - 1
+        if idx in fail_boxes:
+            return {"error": f"box {idx} upstream down"}
+        return {
+            "aircraft": [
+                {
+                    "icao24": "dup001",
+                    "callsign": "RCH777",
+                    "origin_country": "United States",
+                    "latitude": 52.0,
+                    "longitude": 179.9,
+                },
+                {
+                    "icao24": f"uniq{idx}",
+                    "callsign": f"RCH{idx}",
+                    "origin_country": "United States",
+                    "latitude": 52.0,
+                    "longitude": -179.95,
+                },
+            ]
+        }
+
+    _fake.seen = seen
+    return _fake
+
+
+@pytest.mark.asyncio
+async def test_dateline_brief_merges_boxes_and_dedupes(
+    fetcher, dateline_store: AOIStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _patch_all_domains(monkeypatch)
+    fake = _per_bbox_military(fail_boxes=set())
+    monkeypatch.setattr(military, "fetch_military_flights", fake)
+
+    result = await aoi.fetch_aoi_brief(fetcher, dateline_store, "Bering")
+
+    assert len(fake.seen) == 2, "a dateline AOI must query both boxes"
+    # dup001 counted once, uniq0 and uniq1 both in range: 3 aircraft.
+    assert result["counts"]["military_flights"] == 3
+
+
+@pytest.mark.asyncio
+async def test_dateline_brief_partial_coverage_gap(
+    fetcher, dateline_store: AOIStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _patch_all_domains(monkeypatch)
+    monkeypatch.setattr(
+        military, "fetch_military_flights", _per_bbox_military(fail_boxes={1})
+    )
+
+    result = await aoi.fetch_aoi_brief(fetcher, dateline_store, "Bering")
+
+    assert any("partial coverage" in g for g in result["data_gaps"])
+    # The surviving box still contributes aircraft.
+    assert result["counts"]["military_flights"] == 2
+
+
+@pytest.mark.asyncio
+async def test_dateline_escalation_partial_coverage_and_battle_count(
+    fetcher, dateline_store: AOIStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def _battle_acled(fetcher, **kwargs):
+        return {
+            "events": [
+                {
+                    "event_type": "Battles",
+                    "location": "Near Bering",
+                    "event_date": "2026-08-31",
+                    "latitude": 52.0,
+                    "longitude": 179.9,
+                    "fatalities": 3,
+                }
+            ]
+        }
+
+    monkeypatch.setattr(conflict, "fetch_acled_events", _battle_acled)
+    monkeypatch.setattr(
+        military, "fetch_military_flights", _per_bbox_military(fail_boxes={0})
+    )
+
+    result = await aoi.fetch_aoi_escalation(fetcher, dateline_store, "Bering")
+
+    assert any("partial coverage" in g for g in result["data_gaps"])
+    # One battle with 3 fatalities: conflict component = 1*0.5 + 3*0.1.
+    assert result["components"]["conflict"] == pytest.approx(0.8)
+
+
+@pytest.mark.asyncio
+async def test_dateline_changes_partial_coverage(
+    fetcher, dateline_store: AOIStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _patch_all_domains(monkeypatch)
+    monkeypatch.setattr(
+        military, "fetch_military_flights", _per_bbox_military(fail_boxes={1})
+    )
+
+    result = await aoi.fetch_aoi_changes(fetcher, dateline_store, "Bering")
+
+    assert any("partial coverage" in g for g in result["data_gaps"])
+    # No FIRMS region reaches this stretch of the Bering; the honest gap.
+    assert any("Wildfires" in g for g in result["data_gaps"])
+    assert "wildfires" not in result["changes"]
+
+
+@pytest.mark.asyncio
+async def test_changes_drops_unkeyable_item_keeps_placeable(
+    fetcher, aoi_store_with_pittsburgh: AOIStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An item whose key function raises (unparseable coordinates in a
+    wildfire cluster that slipped past the radius filter's own guard)
+    is dropped from the diff, not allowed to poison the sweep."""
+    _patch_all_domains(monkeypatch)
+
+    real_filter = aoi.filter_by_radius
+
+    def _leaky_filter(
+        items, lat, lon, radius_km, lat_key="latitude", lon_key="longitude"
+    ):
+        kept = real_filter(items, lat, lon, radius_km, lat_key, lon_key)
+        # Simulate a malformed item surviving into the scoped list.
+        leak = [i for i in items if i.get("fire_count") == 99]
+        return kept + leak
+
+    async def _wildfires_with_bad_cluster(fetcher, region=None):
+        return {
+            "fires_by_region": {
+                region: {
+                    "top_clusters": [
+                        {"lat": _NEAR_LAT, "lon": _NEAR_LON, "fire_count": 2},
+                        {"lat": "bad", "lon": None, "fire_count": 99},
+                    ]
+                }
+            }
+        }
+
+    monkeypatch.setattr(wildfire, "fetch_wildfires", _wildfires_with_bad_cluster)
+    monkeypatch.setattr(aoi, "filter_by_radius", _leaky_filter)
+
+    result = await aoi.fetch_aoi_changes(
+        fetcher, aoi_store_with_pittsburgh, "Pittsburgh"
+    )
+
+    # The malformed cluster is dropped by the key function guard; only
+    # the placeable one is counted.
+    assert result["counts"]["wildfires"] == 1
+
+
+@pytest.mark.asyncio
+async def test_escalation_reports_gap_when_acled_fails(
+    fetcher, aoi_store_with_pittsburgh: AOIStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def _broken_acled(fetcher, **kwargs):
+        return {"error": "ACLED down"}
+
+    monkeypatch.setattr(conflict, "fetch_acled_events", _broken_acled)
+    monkeypatch.setattr(military, "fetch_military_flights", _fake_military)
+
+    result = await aoi.fetch_aoi_escalation(
+        fetcher, aoi_store_with_pittsburgh, "Pittsburgh"
+    )
+    assert any("Conflict events" in g for g in result["data_gaps"])
