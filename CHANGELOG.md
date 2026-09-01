@@ -1,5 +1,47 @@
 # Changelog
 
+## 0.8.0 - 2026-09-01
+
+AOIs become operational (one-call sweeps and a full CLI), and the
+domain roster reaches Europe, the West Pacific, and the routing table.
+
+### Added
+- `intel_aoi_digest` (+1 tool): the change sweep across every defined
+  AOI (or a named subset) in one call - per-AOI new/departed items,
+  counts, data_gaps, and a combined markdown digest. Each AOI's
+  snapshot advances, so a scheduler can call this one tool on an
+  interval to learn what entered or left all watched areas. No AOIs is
+  a note; unknown requested names are an error; one AOI's failed
+  domain stays in that AOI's data_gaps.
+- `intel aoi` CLI command group: define, define-polygon,
+  define-corridor, list, update, delete, brief, escalation, changes -
+  full parity with the MCP tools, sharing the server's store semantics
+  (same cache-resolved SQLite file) and the 0.6.0 error and
+  markup-safety conventions. Live-smoked through the real entry point.
+- `intel_meteoalarm_alerts` (+1): Meteoalarm (EUMETNET) severe-weather
+  warnings for 39 European countries. Live verification found there is
+  NO Europe-wide feed (per-country only; calling without a country
+  returns the roster) and that awareness color lives only in the
+  warning title, so the module derives it and says so.
+- `intel_jtwc_cyclones` (+1): JTWC warnings for the NW Pacific, North
+  Indian Ocean, and Southern Hemisphere, complementing NHC
+  (`intel_cyclones`). Storm positions/intensities are in the linked
+  warning products, not the feed; the module links rather than
+  pretends. A live run caught and fixed a wrong basin guid before
+  release.
+- `intel_bgp_status` (+1 = 132): per-resource BGP health from RIPEstat
+  - RIS visibility, announced space, observed origins, per-origin RPKI
+  validation. Deliberately scoped as a health check, not global hijack
+  detection: RIPEstat has no target-free incident feed, and the tool
+  description says exactly that. A polite 1s rate floor was added for
+  the ripestat source.
+
+### Not added, honestly
+- FAA NOTAMs: the official API returns 401 without a key and the
+  unofficial search backend is POST-only and undocumented; no genuine
+  key-free machine-readable path was found (verified live 2026-09-01).
+  Tracked in ROADMAP as blocked-on-upstream rather than faked.
+
 ## 0.7.0 - 2026-09-01
 
 The monolith splits. No behavior changes.

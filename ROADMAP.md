@@ -529,10 +529,10 @@ Ordered by value; numbers are proposals, not commitments.
 |---------|-----|--------|
 | Polygon AOIs | 3-64 vertex shapes, dateline-aware, exact membership across brief/changes/escalation; DB migrates in place | :white_check_mark: Shipped in 0.5.0 (`intel_aoi_define_polygon`) |
 | Corridor AOIs | Waypoint route + width; distances measured to the route | :white_check_mark: Shipped in 0.5.0 (`intel_aoi_define_corridor`) |
-| AOI groups / watchlists | Brief or diff several AOIs in one call (`intel_aoi_digest`) | :red_circle: |
+| AOI groups / watchlists | `intel_aoi_digest` sweeps all (or named) AOIs in one call, advancing snapshots | :white_check_mark: Shipped in 0.8.0 |
 | Escalation news + convergence components | `intel_aoi_escalation` reports null for news/convergence; wire GDELT name-mention counts and the existing convergence grid | :yellow_circle: |
 | Geo-scoped news | AOI news is name-mention only; a generic AOI name ("Home") yields junk. Investigate GDELT geo filters / GKG location fields | :yellow_circle: |
-| CLI parity | No `intel aoi` command group exists; MCP-only today | :red_circle: |
+| CLI parity | `intel aoi` group with all 9 subcommands, shared store semantics, live-smoked | :white_check_mark: Shipped in 0.8.0 |
 | Dashboard AOI layer | Draw defined AOIs on the Leaflet map; show per-AOI counts | :red_circle: |
 | Scheduled AOI sweeps | Collector-driven periodic `intel_aoi_changes` with a notification sink (the Pittsburgh-watch use case, generalized) | :red_circle: |
 
@@ -576,12 +576,12 @@ Verified absent from `sources/` on 2026-09-01 (grep, not memory):
 
 | Feature | Source candidate | Status |
 |---------|------------------|--------|
-| Severe weather alerts | NWS CAP alerts shipped in 0.5.0 (`intel_weather_alerts`, US); meteoalarm (EU) still open | :yellow_circle: US done |
-| Tropical cyclone tracking | NHC active storms shipped in 0.5.0 (`intel_cyclones`, Atlantic/E-C Pacific); JTWC (W Pacific/Indian) and forecast tracks still open | :yellow_circle: NHC done |
+| Severe weather alerts | NWS (US, 0.5.0) + Meteoalarm (39 EU countries, 0.8.0; per-country feeds only - no Europe-wide feed exists) | :white_check_mark: |
+| Tropical cyclone tracking | NHC (0.5.0) + JTWC (0.8.0: NW Pacific/N Indian/S Hemisphere; positions live in linked products). Forecast tracks still open | :yellow_circle: warnings done |
 | Dedicated volcano monitoring | GVP weekly report shipped in 0.5.0 (`intel_volcano_activity`) | :white_check_mark: |
-| NOTAMs | FAA NOTAM API (airspace closures are a leading military indicator) | :red_circle: |
+| NOTAMs | BLOCKED upstream: official FAA API is key-required (401 verified live 2026-09-01); unofficial backend POST-only/undocumented. Revisit if FAA opens access | :red_circle: blocked |
 | Launch schedules | Launch Library 2 shipped in 0.5.0 (`intel_launch_schedule`) | :white_check_mark: |
-| BGP incidents | RIPE RIS / Cloudflare Radar routing (route leaks and hijacks; complements existing outage data) | :red_circle: |
+| BGP routing status | `intel_bgp_status` (0.8.0): per-resource RIS visibility + RPKI via RIPEstat. Global incident/hijack feeds remain open (no key-free target-free feed found) | :yellow_circle: per-resource done |
 
 Note: resolved in 0.6.0 - the four domains are in the collector's
 roster (50 sources), with the invariant test and docs updated together.
@@ -604,8 +604,8 @@ suite, and a live MCP stdio session.
 | Tool parity | 128 / 128 | `TOOLS` and `_dispatch()` are aligned (now machine-checked by import-based tests, not text scans) |
 | Static datasets | 18 | Bases, ports, pipelines, nuclear, cables, datacenters, spaceports, minerals, exchanges, trade routes, cloud regions, financial centers |
 | RSS feeds | 119 | 24 categories |
-| Tests in repo | 763 | 745 non-smoke tests + 18 live smoke tests (measured 2026-09-01 evening: `pytest -q` -> 745 passed, 18 deselected); full suite requires `.[dev]` |
-| Statement coverage | 90% | Measured 2026-09-01 evening full-suite `--cov`; was 59% that morning, 81% at v0.4.0. No module below 79%; CI ratchet at 89 |
+| Tests in repo | 886 | 868 non-smoke tests + 18 live smoke tests (measured 2026-09-01 night: `pytest -q` -> 868 passed, 18 deselected); full suite requires `.[dev]` |
+| Statement coverage | 91% | Measured 2026-09-01 night full-suite `--cov` (91.18%); was 59% that morning. CI ratchet at 89 |
 | Primary remaining gaps | `cli.py` tests, coverage gate, `server.py` refactor | See Planned Phases 23-26 |
 
 **Bottom line**: 122 tools across 30+ domains, with the roadmap aligned to the live MCP registry and, for the first time, a forward-looking plan (Phases 23-26): geofence depth, the coverage gate, missing domains, and `server.py` modularization.

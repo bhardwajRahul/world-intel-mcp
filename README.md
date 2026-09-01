@@ -6,7 +6,7 @@
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-green)](https://python.org)
 [![License](https://img.shields.io/badge/License-MIT-yellow)](LICENSE)
 
-Real-time global intelligence across **30+ domains** with **128 MCP tools**, a live ops-center dashboard, a CLI, and a **Qdrant vector store** for enterprise-grade semantic search across accumulated intelligence. All data comes from free, public APIs: no paid subscriptions required.
+Real-time global intelligence across **30+ domains** with **132 MCP tools**, a live ops-center dashboard, a CLI, and a **Qdrant vector store** for enterprise-grade semantic search across accumulated intelligence. All data comes from free, public APIs: no paid subscriptions required.
 
 Built for AI agents that need world awareness: market conditions, geopolitical risk, military posture, supply chain disruptions, cyber threats, and more — all queryable via the Model Context Protocol. The vector store enables natural language queries like *"military activity near Taiwan"* or *"cyber threats targeting healthcare"* across all historical data.
 
@@ -31,7 +31,7 @@ Built for AI agents that need world awareness: market conditions, geopolitical r
 | **Climate** | 1 | Open-Meteo temperature/precipitation anomalies |
 | **Conflict & Security** | 4 | ACLED events, UCDP, unrest detection, humanitarian data |
 | **Military & Defense** | 6 | adsb.lol, OpenSky, hexdb.io, surge detection, theater posture, aircraft batch |
-| **Infrastructure** | 4 | Cloudflare Radar, submarine cables, cascade analysis, cloud status |
+| **Infrastructure** | 5 | Cloudflare Radar, submarine cables, cascade analysis, cloud status, RIPEstat BGP/RPKI |
 | **Maritime** | 2 | NGA navigation warnings, vessel snapshots |
 | **Aviation** | 2 | FAA airport delays, domestic flight snapshot |
 | **News & Media** | 3 | 119 RSS feeds (4-tier), GDELT, trending keywords |
@@ -57,14 +57,14 @@ Built for AI agents that need world awareness: market conditions, geopolitical r
 | **Cross-Domain Analytics** | 3 | Correlation, domain summary, trend detection |
 | **Reports** | 1 | PDF/HTML multi-domain intelligence reports |
 | **Daily Digest** | 1 | Cited markdown morning brief: top events, headlines, trends, and timeline |
-| **AOI Geofences** | 9 | User-defined areas of interest in three shapes (circle, polygon, corridor): define/list/update/delete, a cited multi-domain brief, hotspot escalation scoring, and enter/leave change detection for a user's own area |
-| **Severe Weather** | 1 | NWS active CAP alerts (US) |
+| **AOI Geofences** | 10 | User-defined areas of interest in three shapes (circle, polygon, corridor): define/list/update/delete, a cited multi-domain brief, hotspot escalation scoring, and enter/leave change detection for a user's own area |
+| **Severe Weather** | 2 | NWS active CAP alerts (US), Meteoalarm (39 EU countries) |
 | **Space Launches** | 1 | Launch Library 2 upcoming launches |
 | **Volcanoes** | 1 | Smithsonian GVP weekly activity report |
-| **Tropical Cyclones** | 1 | NHC active storms (Atlantic, E/C Pacific) |
+| **Tropical Cyclones** | 2 | NHC (Atlantic, E/C Pacific) + JTWC (NW Pacific, N Indian, S Hemisphere) |
 | **Situation Brief** | 1 | Cited situational awareness brief over MCP: bounded server-side overview synthesized via local Ollama, with a mechanically-cited fallback |
 
-**Total: 128 tools** across 30+ intelligence domains.
+**Total: 132 tools** across 30+ intelligence domains.
 
 ---
 
@@ -475,7 +475,10 @@ intel_aoi_brief(name="Taiwan Strait")
 intel_aoi_escalation(name="Pittsburgh")
 intel_aoi_update(name="Pittsburgh", radius_km=100)   # resize/rename in place
 intel_aoi_changes(name="Suez Approach")  # what entered/left since last sweep
+intel_aoi_digest()  # one-call sweep across ALL your areas
 ```
+
+The same nine operations are available from the terminal: `intel aoi define|define-polygon|define-corridor|list|update|delete|brief|escalation|changes`.
 
 Membership is exact for the shape (an event inside a polygon's
 bounding circle but outside the polygon is excluded); corridor
@@ -586,7 +589,7 @@ Everything else uses free, unauthenticated public APIs.
 
 ```bash
 pip install -e ".[dev]"
-pytest                       # 745 tests (763 total, 18 live-network smoke tests deselected by default)
+pytest                       # 868 tests (886 total, 18 live-network smoke tests deselected by default)
 pytest --cov=world_intel_mcp # with coverage
 pytest tests/test_forex.py -v # single module
 ```
