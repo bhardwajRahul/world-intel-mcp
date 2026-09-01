@@ -1,5 +1,59 @@
 # Changelog
 
+## 0.5.0 - 2026-09-01
+
+Geofences in any shape, four new hazard domains, precise entity
+matching, and the last coverage zeros gone.
+
+### Added
+- **Polygon AOIs** — `intel_aoi_define_polygon` (+1 tool): a named area
+  bounded by 3-64 [lat, lon] vertices, for shapes a radius cannot
+  express (a border region, a strait, an EEZ). Every intel_aoi_* tool
+  scopes to the exact polygon: an event inside the bounding circle but
+  outside the polygon is excluded. Polygons may cross the antimeridian.
+  Point infrastructure matches the exact shape; line features
+  (pipelines, cables) match the bounding circle, disclosed in
+  `data_gaps` rather than silently approximated.
+- **Corridor AOIs** — `intel_aoi_define_corridor` (+1 tool): a route of
+  waypoints plus a width in km (a shipping lane, a supply road, a cable
+  run), built on the great-circle segment distance from 0.4.0.
+  Distances in results are measured to the route, not to a center.
+  Existing AOI databases migrate in place; old rows read as circles.
+- **Four hazard/space domains** (+4 tools = 128), each verified against
+  its live API before mocking: `intel_weather_alerts` (NWS CAP, US
+  only, honest null coordinates for zone-based alerts),
+  `intel_launch_schedule` (Launch Library 2, hour-long cache for the
+  free tier), `intel_volcano_activity` (Smithsonian GVP weekly
+  report), `intel_cyclones` (NHC active storms - Atlantic/E-C Pacific
+  basins only; zero storms is a quiet tropics, not an outage).
+- CLI and collector test waves: `cli.py` 0% -> 92% (76 tests driving
+  all 52 reachable commands through CliRunner), `collector.py`
+  20% -> 97% (run loop, daemon cycle, source-filter resolution). The
+  last of the coverage zeros from the 0.4.0 audit.
+
+### Fixed
+- Entity extraction no longer substring-matches: "usa" inside
+  "thousand" tagged the United States, "hamas" inside "Bahamas",
+  "trump" inside "trumpet", "meta" inside "metadata". Countries,
+  leaders, organizations, and companies now use the same precompiled
+  word-boundary alternation the APT-group matcher always had (with a
+  plural allowance for country demonyms). Verified faster per call on
+  headline-size inputs.
+- Event classification keywords are boundary-anchored stems:
+  "launched" still classifies space, but "strike" inside "airstrike"
+  no longer adds a social-unrest category and severity bump, "ied"
+  inside "denied" no longer fires, "coup" inside "couple" no longer
+  fires. A benign sentence that previously triggered four categories
+  at severity 7 now classifies as nothing.
+
+### Known issues (pinned by tests, fix planned)
+- ~30 CLI commands render an upstream `{"error": ...}` as a
+  healthy-looking empty state ("0 earthquakes" on an outage), and
+  lowercase bracketed values in Rich output are swallowed as markup
+  (the `intel report` fallback hint prints a pip command missing its
+  `[pdf]` extra). Both are documented by deliberately-pinning tests
+  in `test_cli.py` and tracked in ROADMAP Phase 24.5.
+
 ## 0.4.0 - 2026-09-01
 
 Geofences that survive the dateline, notice change, a test suite that
