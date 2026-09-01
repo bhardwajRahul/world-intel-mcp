@@ -99,14 +99,15 @@ async def test_fetch_displacement_summary_year_coerced_from_string(
 
 @respx.mock
 @pytest.mark.asyncio
-async def test_fetch_displacement_summary_api_down_returns_zeroed_shape(
+async def test_fetch_displacement_summary_api_down_is_marked_degraded(
     fetcher: Fetcher, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Suspected bug (documented, not fixed): a UNHCR outage returns
-    global_totals of all zeros with NO error/degraded key — byte-shape
-    identical to a world with zero displaced persons. This is the
-    fail-reads-as-success class this repo treats as its worst bug family;
-    flagged in the review report rather than fixed here."""
+    """Regression (fail-reads-as-success class): a UNHCR outage used to
+    return global_totals of all zeros with NO error/degraded key —
+    byte-shape identical to a world with zero displaced persons. The
+    outage shape must carry honest markers; the zeroed structure stays
+    for consumers that read fields without checking (cli.py reads
+    global_totals directly)."""
 
     async def _no_sleep(*args, **kwargs) -> None:
         return None
@@ -119,7 +120,9 @@ async def test_fetch_displacement_summary_api_down_returns_zeroed_shape(
     assert result["by_origin"] == []
     assert result["count"] == 0
     assert result["global_totals"]["grand_total"] == 0
-    assert "error" not in result  # current (dishonest-quiet) behavior
+    assert "unavailable" in result["error"].lower()
+    assert result["degraded"] is True
+    assert result["reason"] == "unhcr_fetch_failed"
 
 
 def test_safe_int() -> None:

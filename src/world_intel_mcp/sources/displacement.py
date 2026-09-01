@@ -59,7 +59,16 @@ async def fetch_displacement_summary(
 
     if data is None:
         logger.warning("UNHCR API returned no data")
+        # Honest outage shape: without these markers this return was
+        # byte-shape identical to a world with zero displaced persons
+        # (the fail-reads-as-success class). The zeroed structure stays
+        # so field-reading consumers (cli.py reads global_totals
+        # directly) keep working; error/degraded/reason distinguish
+        # "UNHCR is down" from "zero refugees worldwide".
         return {
+            "error": "UNHCR API unavailable (no live or cached data)",
+            "degraded": True,
+            "reason": "unhcr_fetch_failed",
             "by_origin": [],
             "global_totals": {
                 "total_refugees": 0,
@@ -115,15 +124,17 @@ async def fetch_displacement_summary(
             + totals["stateless"]
             + totals["ooc"]
         )
-        by_origin.append({
-            "country": country,
-            "refugees": totals["refugees"],
-            "asylum_seekers": totals["asylum_seekers"],
-            "internally_displaced": totals["idps"],
-            "stateless": totals["stateless"],
-            "others_of_concern": totals["ooc"],
-            "total_displaced": total_displaced,
-        })
+        by_origin.append(
+            {
+                "country": country,
+                "refugees": totals["refugees"],
+                "asylum_seekers": totals["asylum_seekers"],
+                "internally_displaced": totals["idps"],
+                "stateless": totals["stateless"],
+                "others_of_concern": totals["ooc"],
+                "total_displaced": total_displaced,
+            }
+        )
 
     # Sort by total_displaced descending, take top 30
     by_origin.sort(key=lambda e: e["total_displaced"], reverse=True)
