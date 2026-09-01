@@ -140,6 +140,61 @@ _MODERATE_SEVERITY: list[str] = [
     "attack", "strike", "explosion", "breach", "violation",
 ]
 
+# ---------------------------------------------------------------------------
+# Keyword compilation
+#
+# Default semantics: boundary-anchored prefix (\b + keyword + \w*), so stems
+# keep matching their inflections ("launch" → "launched", "protest" →
+# "protesters") but nothing fires mid-word ("riot" no longer matches inside
+# "patriotic", "strike" inside "airstrike", "ied" inside "denied").
+# ---------------------------------------------------------------------------
+
+# Keywords that are themselves prefixes of unrelated words match only as a
+# standalone word (plus plural): "port" must not fire on "portfolio", "coup"
+# on "couple", "regime" on "regimen", "carbon" on "carbonated".
+_WORD_ONLY_KEYWORDS: frozenset[str] = frozenset({"coup", "port", "regime", "carbon"})
+
+# Keywords whose valid suffixes are narrower than \w*: "apt" only as APT or
+# a numbered group id (never "aptitude"), "dead" only bare or "deadly"
+# (never "deadline").
+_PATTERN_OVERRIDES: dict[str, str] = {
+    "apt": r"\bapt\d*\b",
+    "dead": r"\bdead(?:ly)?\b",
+}
+
+
+def _compile_keyword(kw: str) -> re.Pattern[str]:
+    override = _PATTERN_OVERRIDES.get(kw)
+    if override is not None:
+        return re.compile(override)
+    if kw in _WORD_ONLY_KEYWORDS:
+        return re.compile(r"\b" + re.escape(kw) + r"s?\b")
+    return re.compile(r"\b" + re.escape(kw) + r"\w*")
+
+
+def _matched_keywords(
+    patterns: list[tuple[str, re.Pattern[str]]], text_lower: str
+) -> list[str]:
+    """Keywords whose boundary pattern matches, in table order.
+
+    Every pattern requires its literal keyword as a substring (overrides
+    included), so the C-speed `in` check gates the regex and keeps
+    classification at roughly substring-scan cost.
+    """
+    return [kw for kw, pat in patterns if kw in text_lower and pat.search(text_lower)]
+
+
+_CATEGORY_PATTERNS: dict[str, list[tuple[str, re.Pattern[str]]]] = {
+    name: [(kw, _compile_keyword(kw)) for kw in info["keywords"]]
+    for name, info in CATEGORIES.items()
+}
+_HIGH_SEVERITY_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
+    (kw, _compile_keyword(kw)) for kw in _HIGH_SEVERITY
+]
+_MODERATE_SEVERITY_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
+    (kw, _compile_keyword(kw)) for kw in _MODERATE_SEVERITY
+]
+
 
 def classify_event(text: str) -> dict:
     """Classify text into threat categories with severity scoring.
@@ -151,25 +206,27 @@ def classify_event(text: str) -> dict:
     matches: list[dict] = []
 
     for cat_name, cat_info in CATEGORIES.items():
-        matched_kw = [kw for kw in cat_info["keywords"] if kw in text_lower]
+        matched_kw = _matched_keywords(_CATEGORY_PATTERNS[cat_name], text_lower)
         if matched_kw:
             # Confidence scales with number of keyword hits
             confidence = min(1.0, len(matched_kw) * 0.2 + 0.3)
-            matches.append({
-                "category": cat_name,
-                "keywords_matched": matched_kw,
-                "keyword_count": len(matched_kw),
-                "severity_base": cat_info["severity_base"],
-                "confidence": round(confidence, 2),
-            })
+            matches.append(
+                {
+                    "category": cat_name,
+                    "keywords_matched": matched_kw,
+                    "keyword_count": len(matched_kw),
+                    "severity_base": cat_info["severity_base"],
+                    "confidence": round(confidence, 2),
+                }
+            )
 
     # Sort by keyword count (most specific match first)
     matches.sort(key=lambda m: m["keyword_count"], reverse=True)
 
     # Compute severity modifier
     severity_mod = 0
-    high_hits = [kw for kw in _HIGH_SEVERITY if kw in text_lower]
-    mod_hits = [kw for kw in _MODERATE_SEVERITY if kw in text_lower]
+    high_hits = _matched_keywords(_HIGH_SEVERITY_PATTERNS, text_lower)
+    mod_hits = _matched_keywords(_MODERATE_SEVERITY_PATTERNS, text_lower)
     if high_hits:
         severity_mod = 2
     elif mod_hits:
@@ -183,7 +240,11 @@ def classify_event(text: str) -> dict:
         "severity": severity,
         "confidence": primary["confidence"] if primary else 0.0,
         "all_categories": [
-            {"category": m["category"], "confidence": m["confidence"], "keywords": m["keywords_matched"]}
+            {
+                "category": m["category"],
+                "confidence": m["confidence"],
+                "keywords": m["keywords_matched"],
+            }
             for m in matches
         ],
         "category_count": len(matches),

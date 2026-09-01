@@ -13,10 +13,32 @@ from ..config.countries import TIER1_COUNTRIES
 from ..config.entities import LEADERS, ORGANIZATIONS, COMPANIES, APT_GROUPS
 
 
+def _compile_keywords(
+    keywords, *, plural_min_len: int | None = None
+) -> re.Pattern[str]:
+    """Compile keywords into one word-boundary-anchored alternation.
+
+    Longest-first ordering makes multi-word variants win over their prefixes
+    ("united nations" before "un"). With plural_min_len set, alphabetic
+    keywords at least that long also match a trailing "s" ("americans",
+    "houthis"); shorter abbreviations stay exact so "usa" never matches
+    inside "thousand" or "usable".
+    """
+    parts = []
+    for kw in sorted(keywords, key=len, reverse=True):
+        esc = re.escape(kw)
+        if plural_min_len is not None and len(kw) >= plural_min_len and kw.isalpha():
+            esc += "s?"
+        parts.append(esc)
+    return re.compile(r"\b(?:" + "|".join(parts) + r")\b")
+
+
 # Pre-compile patterns
 _CVE_RE = re.compile(r"CVE-\d{4}-\d{4,}", re.IGNORECASE)
 _APT_RE = re.compile(
-    r"\b(?:" + "|".join(re.escape(a) for a in sorted(APT_GROUPS, key=len, reverse=True)) + r")\b",
+    r"\b(?:"
+    + "|".join(re.escape(a) for a in sorted(APT_GROUPS, key=len, reverse=True))
+    + r")\b",
     re.IGNORECASE,
 )
 
@@ -37,6 +59,13 @@ _ORG_KW: dict[str, dict] = {k.lower(): v for k, v in ORGANIZATIONS.items()}
 # Build company lookup (lowercase)
 _COMPANY_KW: dict[str, dict] = {k.lower(): v for k, v in COMPANIES.items()}
 
+# Demonyms pluralize in headlines ("Americans", "Houthis"); leader, org, and
+# company names must stay exact — "apples" is not Apple Inc.
+_COUNTRY_RE = _compile_keywords(_COUNTRY_KW, plural_min_len=5)
+_LEADER_RE = _compile_keywords(_LEADER_KW)
+_ORG_RE = _compile_keywords(_ORG_KW)
+_COMPANY_RE = _compile_keywords(_COMPANY_KW)
+
 
 def extract_entities(text: str) -> dict:
     """Extract named entities from text.
@@ -44,7 +73,6 @@ def extract_entities(text: str) -> dict:
     Returns dict with entities grouped by type, plus counts and metadata.
     """
     text_lower = text.lower()
-    words_set = set(text_lower.split())
 
     countries: list[dict] = []
     leaders: list[dict] = []
@@ -58,64 +86,65 @@ def extract_entities(text: str) -> dict:
     seen_orgs: set[str] = set()
     seen_companies: set[str] = set()
 
-    # Countries (keyword search in text)
-    for kw, iso3 in _COUNTRY_KW.items():
-        if iso3 in seen_countries:
+    # Countries (word-boundary match; the regex may add a plural "s" that
+    # is not itself a lookup key, so fall back to the singular)
+    for match in _COUNTRY_RE.finditer(text_lower):
+        kw = match.group(0)
+        iso3 = _COUNTRY_KW.get(kw) or _COUNTRY_KW.get(kw[:-1])
+        if iso3 is None or iso3 in seen_countries:
             continue
-        if kw in text_lower:
-            seen_countries.add(iso3)
-            info = TIER1_COUNTRIES[iso3]
-            countries.append({
+        seen_countries.add(iso3)
+        info = TIER1_COUNTRIES[iso3]
+        countries.append(
+            {
                 "iso3": iso3,
                 "name": info["name"],
                 "baseline_risk": info["baseline_risk"],
-            })
+            }
+        )
 
-    # Leaders (match longest first to avoid partial matches)
-    for kw in sorted(_LEADER_KW.keys(), key=len, reverse=True):
-        info = _LEADER_KW[kw]
+    # Leaders (longest alternative wins, so "vladimir putin" never also
+    # emits a second entry via "putin")
+    for match in _LEADER_RE.finditer(text_lower):
+        info = _LEADER_KW[match.group(0)]
         if info["name"] in seen_leaders:
             continue
-        if kw in text_lower:
-            seen_leaders.add(info["name"])
-            leaders.append({
+        seen_leaders.add(info["name"])
+        leaders.append(
+            {
                 "name": info["name"],
                 "title": info["title"],
                 "country": info["country"],
-            })
+            }
+        )
 
     # Organizations
-    for kw in sorted(_ORG_KW.keys(), key=len, reverse=True):
-        info = _ORG_KW[kw]
+    for match in _ORG_RE.finditer(text_lower):
+        info = _ORG_KW[match.group(0)]
         if info["abbrev"] in seen_orgs:
             continue
-        # For short abbreviations (2-4 chars), require word boundary
-        if len(kw) <= 4:
-            if kw in words_set:
-                seen_orgs.add(info["abbrev"])
-                organizations.append({
-                    "name": info["abbrev"],
-                    "type": info["type"],
-                })
-        elif kw in text_lower:
-            seen_orgs.add(info["abbrev"])
-            organizations.append({
+        seen_orgs.add(info["abbrev"])
+        organizations.append(
+            {
                 "name": info["abbrev"],
                 "type": info["type"],
-            })
+            }
+        )
 
     # Companies
-    for kw in sorted(_COMPANY_KW.keys(), key=len, reverse=True):
-        info = _COMPANY_KW[kw]
+    for match in _COMPANY_RE.finditer(text_lower):
+        kw = match.group(0)
         if kw in seen_companies:
             continue
-        if kw in text_lower:
-            seen_companies.add(kw)
-            companies.append({
+        info = _COMPANY_KW[kw]
+        seen_companies.add(kw)
+        companies.append(
+            {
                 "name": kw.title(),
                 "ticker": info["ticker"],
                 "sector": info["sector"],
-            })
+            }
+        )
 
     # CVEs
     cves = list(set(_CVE_RE.findall(text)))

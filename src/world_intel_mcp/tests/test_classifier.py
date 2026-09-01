@@ -106,3 +106,70 @@ async def test_fetch_classify_event_wraps_sync_classifier() -> None:
     assert result["primary_category"] == direct["primary_category"]
     assert result["severity"] == direct["severity"]
     assert result["confidence"] == direct["confidence"]
+
+
+# ---------------------------------------------------------------------------
+# Word-boundary regressions (Phase 24.5): substring matching fired categories
+# and severity bumps from the inside of unrelated words — "port" in "report",
+# "coup" in "couple". Verb stems must still match their inflections.
+# ---------------------------------------------------------------------------
+
+
+def test_keywords_inside_unrelated_words_do_not_fire() -> None:
+    # Pre-fix this fired maritime ("port" in "report"), political ("coup" in
+    # "couple"), social_unrest ("riot" in "patriotic"), and cyber ("apt" in
+    # "captured").
+    result = classify_event(
+        "The report said a couple of patriotic films were captured on camera"
+    )
+    assert result["primary_category"] == "unclassified"
+    assert result["all_categories"] == []
+    assert result["severity"] == 0
+
+
+def test_airstrike_is_military_not_labor_strike() -> None:
+    result = classify_event("Airstrike hits depot near the frontline")
+    assert result["primary_category"] == "military"
+    cats = {c["category"] for c in result["all_categories"]}
+    assert "social_unrest" not in cats
+    # "strike" inside "airstrike" must not bump severity either.
+    assert result["severity_modifiers"] == []
+    assert result["severity"] == CATEGORIES["military"]["severity_base"]
+
+
+def test_labor_strike_still_fires_social_unrest() -> None:
+    result = classify_event("General strike and labor dispute paralyze the capital")
+    assert result["primary_category"] == "social_unrest"
+
+
+def test_verb_stems_still_match_inflected_forms() -> None:
+    result = classify_event("SpaceX launched a rocket into orbit")
+    assert result["primary_category"] == "space"
+    matched = result["all_categories"][0]["keywords"]
+    assert {"launch", "rocket", "orbit"} <= set(matched)
+
+
+def test_protest_stem_matches_protesters() -> None:
+    result = classify_event("A thousand protesters marched on parliament")
+    assert result["primary_category"] == "political"
+
+
+def test_deadline_does_not_bump_severity() -> None:
+    # "deadline" contains "dead" (a high-severity modifier).
+    result = classify_event("Sanctions deadline nears for the regime")
+    assert result["primary_category"] == "political"
+    assert result["severity_modifiers"] == []
+    assert result["severity"] == CATEGORIES["political"]["severity_base"]
+
+
+def test_deadly_still_bumps_severity() -> None:
+    result = classify_event("Deadly explosion reported at the port")
+    assert result["primary_category"] == "maritime"
+    assert "dead" in result["severity_modifiers"]
+    assert result["severity"] == CATEGORIES["maritime"]["severity_base"] + 2
+
+
+def test_apt_matches_group_ids_as_words() -> None:
+    result = classify_event("APT29 exploited a zero-day in the wild")
+    assert result["primary_category"] == "cyber"
+    assert "apt" in result["all_categories"][0]["keywords"]

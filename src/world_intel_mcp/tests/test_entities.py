@@ -137,3 +137,58 @@ async def test_fetch_entity_extraction_from_news_feed(
 async def test_fetch_entity_extraction_no_text_no_news(fetcher) -> None:
     result = await fetch_entity_extraction(fetcher, text=None, use_news=False)
     assert result["total_entities"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Word-boundary regressions (Phase 24.5): substring matching tagged entities
+# from the inside of unrelated words — "usa" in "thousand", "bp" in "subplot".
+# Each false-positive test is paired with a real-mention test so the fix
+# cannot pass by simply matching less.
+# ---------------------------------------------------------------------------
+
+
+def test_country_keyword_inside_word_not_tagged() -> None:
+    # "thousand" and "usable" both contain "usa"; neither mentions the USA.
+    result = extract_entities("A thousand protesters filled the square")
+    assert _iso3s(result) == set()
+
+    result = extract_entities("The bridge is no longer usable after the storm")
+    assert _iso3s(result) == set()
+
+
+def test_country_word_and_plural_demonym_still_tagged() -> None:
+    result = extract_entities("Americans voted as the USA prepared for midterms")
+    assert _iso3s(result) == {"USA"}
+
+
+def test_company_names_inside_words_not_tagged() -> None:
+    # "metadata" contains "meta", "bombshell" contains "shell",
+    # "subplot" contains "bp".
+    result = extract_entities("The metadata revealed a bombshell subplot")
+    assert result["entities"]["companies"] == []
+
+
+def test_company_short_names_still_match_as_words() -> None:
+    result = extract_entities("BP and Shell posted profits while Meta hired")
+    names = {c["name"] for c in result["entities"]["companies"]}
+    assert names == {"Bp", "Shell", "Meta"}
+
+
+def test_leader_names_inside_words_not_tagged() -> None:
+    # Same bug class: "taxi" contains "xi", "commodity" contains "modi",
+    # "trumpet" contains "trump".
+    result = extract_entities("The taxi passed commodity traders at the trumpet parade")
+    assert result["entities"]["leaders"] == []
+
+
+def test_leader_short_names_still_match_as_words() -> None:
+    result = extract_entities("Xi and Modi met at the summit")
+    names = {ldr["name"] for ldr in result["entities"]["leaders"]}
+    assert names == {"Xi Jinping", "Narendra Modi"}
+
+
+def test_long_org_name_inside_word_not_tagged() -> None:
+    # The pre-fix boundary guard only covered keywords of <=4 chars, so
+    # "hamas" matched inside "bahamas".
+    result = extract_entities("Storm damage reported across the Bahamas")
+    assert result["entities"]["organizations"] == []
