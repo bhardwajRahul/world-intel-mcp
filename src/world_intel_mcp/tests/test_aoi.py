@@ -9,6 +9,7 @@ aoi.py composes existing ``sources/*.py`` fetch functions rather than
 making HTTP calls itself, so there is no network edge for respx to sit at.
 """
 
+import inspect
 from pathlib import Path
 
 import pytest
@@ -600,10 +601,36 @@ async def test_fetch_aoi_escalation_reports_data_gap_on_fetch_failure(
 
 
 # ---------------------------------------------------------------------------
-# Server registration / dispatch parity (matches test_daily_digest.py's
-# pattern: read server.py as text rather than importing it, since import
-# opens a live Cache()/AOIStore() at the default on-disk path).
+# Server registration / dispatch parity. Since the Phase 26 split the AOI
+# tools live in tools/aoi.py; these tests import the aggregated registry
+# for real (under the suite's sanctioned temp cache path) instead of
+# scanning server.py as text, and verify both registration and that each
+# handler still dispatches to the intended analysis/aoi.py function.
 # ---------------------------------------------------------------------------
+
+
+def _tools_registry():
+    """Import world_intel_mcp.tools under the suite's temp cache path.
+
+    Importing the tools package imports runtime, which opens a live
+    ``Cache()``/``AOIStore()``; pointing WORLD_INTEL_CACHE_DB at
+    test_server_registry's temp path (shared, so the override holds no
+    matter which test file triggers the first import) keeps that off the
+    developer's real cache database."""
+    import importlib
+    import os
+
+    from .test_server_registry import _TMP_CACHE
+
+    prior = os.environ.get("WORLD_INTEL_CACHE_DB")
+    os.environ["WORLD_INTEL_CACHE_DB"] = str(_TMP_CACHE)
+    try:
+        return importlib.import_module("world_intel_mcp.tools")
+    finally:
+        if prior is None:
+            os.environ.pop("WORLD_INTEL_CACHE_DB", None)
+        else:
+            os.environ["WORLD_INTEL_CACHE_DB"] = prior
 
 
 @pytest.mark.parametrize(
@@ -617,25 +644,29 @@ async def test_fetch_aoi_escalation_reports_data_gap_on_fetch_failure(
     ],
 )
 def test_aoi_tools_registered_and_dispatched(tool_name: str, fn_name: str) -> None:
-    """Structural parity check: the TOOLS/`_dispatch` 1:1 invariant this
-    repo maintains (see ROADMAP.md 'MCP tool parity') must hold for every
-    new AOI tool."""
-    text = _SERVER_PY.read_text()
+    """Structural parity check: the TOOLS/handler 1:1 invariant this repo
+    maintains (see ROADMAP.md 'MCP tool parity') must hold for every AOI
+    tool. Membership in ALL_TOOLS/ALL_HANDLERS proves tools/aoi.py is
+    wired into _MODULES (not merely present on disk); the handler-source
+    check proves the tool still routes to the intended analysis/aoi.py
+    function."""
+    tools_pkg = _tools_registry()
 
-    assert f'name="{tool_name}"' in text
+    assert tool_name in {t.name for t in tools_pkg.aoi.TOOLS}
+    assert tool_name in {t.name for t in tools_pkg.ALL_TOOLS}
 
-    dispatch_idx = text.index(f'case "{tool_name}":')
-    assert dispatch_idx > 0
-    dispatch_body = text[dispatch_idx : dispatch_idx + 300]
-    assert fn_name in dispatch_body
+    handler = tools_pkg.aoi.HANDLERS[tool_name]
+    assert tools_pkg.ALL_HANDLERS[tool_name] is handler
+    assert fn_name in inspect.getsource(handler)
 
 
 def test_aoi_store_instantiated_from_cache_db_path() -> None:
     """The AOIStore must share the Cache's resolved db_path, not compute
     its own default independently (which could diverge under
-    WORLD_INTEL_CACHE_DB or the tempdir fallback)."""
-    text = _SERVER_PY.read_text()
-    assert "_aoi_store = aoi.AOIStore(cache.db_path)" in text
+    WORLD_INTEL_CACHE_DB or the tempdir fallback). Since the Phase 26
+    split the construction lives in runtime.py."""
+    text = (_SERVER_PY.parent / "runtime.py").read_text()
+    assert "aoi.AOIStore(cache.db_path)" in text
 
 
 # ---------------------------------------------------------------------------
@@ -1003,11 +1034,14 @@ def test_delete_aoi_also_deletes_snapshot(store: AOIStore) -> None:
     ],
 )
 def test_new_aoi_tools_registered_and_dispatched(tool_name: str, fn_name: str) -> None:
-    text = _SERVER_PY.read_text()
-    assert f'name="{tool_name}"' in text
-    dispatch_idx = text.index(f'case "{tool_name}":')
-    dispatch_body = text[dispatch_idx : dispatch_idx + 300]
-    assert fn_name in dispatch_body
+    tools_pkg = _tools_registry()
+
+    assert tool_name in {t.name for t in tools_pkg.aoi.TOOLS}
+    assert tool_name in {t.name for t in tools_pkg.ALL_TOOLS}
+
+    handler = tools_pkg.aoi.HANDLERS[tool_name]
+    assert tools_pkg.ALL_HANDLERS[tool_name] is handler
+    assert fn_name in inspect.getsource(handler)
 
 
 # ---------------------------------------------------------------------------

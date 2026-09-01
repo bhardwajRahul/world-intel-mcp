@@ -6,7 +6,6 @@ used in test_intelligence.py, since daily_digest composes existing
 """
 
 import re
-from pathlib import Path
 
 import pytest
 
@@ -23,8 +22,6 @@ from world_intel_mcp.sources import (
     traffic,
     wildfire,
 )
-
-_SERVER_PY = Path(__file__).resolve().parents[1] / "server.py"
 
 
 class _FakeVectorStore:
@@ -270,18 +267,42 @@ async def test_digest_domain_failure_reports_gap_not_fabricated_event(
     assert not any(s["domain"] == "cyber" for s in result["sources"])
 
 
+def _tools_registry():
+    """Import world_intel_mcp.tools under the suite's temp cache path.
+
+    Importing the tools package imports runtime, which opens a live
+    ``Cache()``/``AOIStore()``; pointing WORLD_INTEL_CACHE_DB at
+    test_server_registry's temp path (shared, so the override holds no
+    matter which test file triggers the first import) keeps that off the
+    developer's real cache database."""
+    import importlib
+    import os
+
+    from .test_server_registry import _TMP_CACHE
+
+    prior = os.environ.get("WORLD_INTEL_CACHE_DB")
+    os.environ["WORLD_INTEL_CACHE_DB"] = str(_TMP_CACHE)
+    try:
+        return importlib.import_module("world_intel_mcp.tools")
+    finally:
+        if prior is None:
+            os.environ.pop("WORLD_INTEL_CACHE_DB", None)
+        else:
+            os.environ["WORLD_INTEL_CACHE_DB"] = prior
+
+
 def test_intel_daily_digest_registered_and_dispatched() -> None:
-    """Structural parity check: the TOOLS/`_dispatch` 1:1 invariant this
+    """Structural parity check: the TOOLS/handler 1:1 invariant this
     repo maintains (see ROADMAP.md 'MCP tool parity') must hold for the
-    new tool. Reads server.py as text rather than importing the module,
-    since importing `world_intel_mcp.server` has real side effects
-    (opens a live Cache() at the default on-disk path) that no other
-    test in this suite triggers."""
-    text = _SERVER_PY.read_text()
+    tool. Since the Phase 26 split it lives in tools/aoi.py; importing
+    the aggregated registry verifies registration for real (membership
+    in ALL_TOOLS/ALL_HANDLERS proves the module is wired into _MODULES)
+    and that the handler still routes to fetch_daily_digest."""
+    import inspect
 
-    assert 'name="intel_daily_digest"' in text
+    tools_pkg = _tools_registry()
 
-    dispatch_idx = text.index('case "intel_daily_digest":')
-    assert dispatch_idx > 0
-    dispatch_body = text[dispatch_idx : dispatch_idx + 300]
-    assert "fetch_daily_digest" in dispatch_body
+    assert "intel_daily_digest" in {t.name for t in tools_pkg.ALL_TOOLS}
+
+    handler = tools_pkg.ALL_HANDLERS["intel_daily_digest"]
+    assert "fetch_daily_digest" in inspect.getsource(handler)

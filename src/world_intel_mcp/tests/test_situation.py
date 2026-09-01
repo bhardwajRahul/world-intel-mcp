@@ -10,7 +10,6 @@ analysis/*.py fetch functions rather than making HTTP calls itself.
 """
 
 import re
-from pathlib import Path
 
 import httpx
 import pytest
@@ -34,7 +33,6 @@ from world_intel_mcp.sources import (
 from world_intel_mcp.sources import wildfire
 
 _OLLAMA_GENERATE = "http://localhost:11434/api/generate"
-_SERVER_PY = Path(__file__).resolve().parents[1] / "server.py"
 
 
 def _synthetic_overview() -> dict:
@@ -533,18 +531,42 @@ async def test_situation_brief_tool_falls_back_when_ollama_unreachable(
     assert found_ns <= real_ns
 
 
+def _tools_registry():
+    """Import world_intel_mcp.tools under the suite's temp cache path.
+
+    Importing the tools package imports runtime, which opens a live
+    ``Cache()``/``AOIStore()``; pointing WORLD_INTEL_CACHE_DB at
+    test_server_registry's temp path (shared, so the override holds no
+    matter which test file triggers the first import) keeps that off the
+    developer's real cache database."""
+    import importlib
+    import os
+
+    from .test_server_registry import _TMP_CACHE
+
+    prior = os.environ.get("WORLD_INTEL_CACHE_DB")
+    os.environ["WORLD_INTEL_CACHE_DB"] = str(_TMP_CACHE)
+    try:
+        return importlib.import_module("world_intel_mcp.tools")
+    finally:
+        if prior is None:
+            os.environ.pop("WORLD_INTEL_CACHE_DB", None)
+        else:
+            os.environ["WORLD_INTEL_CACHE_DB"] = prior
+
+
 def test_intel_situation_brief_registered_and_dispatched() -> None:
-    """Structural parity check: the TOOLS/`_dispatch` 1:1 invariant this
+    """Structural parity check: the TOOLS/handler 1:1 invariant this
     repo maintains (see ROADMAP.md 'MCP tool parity') must hold for the
-    new tool. Reads server.py as text rather than importing the module,
-    matching test_daily_digest.py's and test_aoi.py's pattern (importing
-    world_intel_mcp.server opens a live Cache() at the default on-disk
-    path, which no other test in this suite triggers)."""
-    text = _SERVER_PY.read_text()
+    tool. Since the Phase 26 split it lives in tools/aoi.py; importing
+    the aggregated registry verifies registration for real (membership
+    in ALL_TOOLS/ALL_HANDLERS proves the module is wired into _MODULES)
+    and that the handler still routes to fetch_live_situation_brief."""
+    import inspect
 
-    assert 'name="intel_situation_brief"' in text
+    tools_pkg = _tools_registry()
 
-    dispatch_idx = text.index('case "intel_situation_brief":')
-    assert dispatch_idx > 0
-    dispatch_body = text[dispatch_idx : dispatch_idx + 300]
-    assert "fetch_live_situation_brief" in dispatch_body
+    assert "intel_situation_brief" in {t.name for t in tools_pkg.ALL_TOOLS}
+
+    handler = tools_pkg.ALL_HANDLERS["intel_situation_brief"]
+    assert "fetch_live_situation_brief" in inspect.getsource(handler)

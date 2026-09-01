@@ -60,14 +60,66 @@ def test_every_tool_has_description_and_object_schema(server) -> None:
 
 def test_tools_and_dispatch_are_in_one_to_one_parity(server) -> None:
     """The invariant ROADMAP.md carries ('TOOLS and _dispatch are
-    aligned'), checked against the imported module rather than a text
-    scan of the repo: every registered tool has a dispatch case and
-    every dispatch case is a registered tool."""
+    aligned'). Since the Phase 26 split, dispatch is the union of the
+    modular handler registry (tools.ALL_HANDLERS, whose per-module
+    parity is enforced at import by tools.aggregate) and the shrinking
+    legacy match/case; every registered tool must resolve through
+    exactly that union, and nothing may be dispatchable without being
+    registered."""
+    from world_intel_mcp import tools as tools_pkg
+
     registered = {t.name for t in server.TOOLS}
     dispatch_src = inspect.getsource(server._dispatch)
-    dispatched = set(re.findall(r'case "(intel_[a-z0-9_]+)"', dispatch_src))
-    assert registered - dispatched == set(), "registered but never dispatched"
-    assert dispatched - registered == set(), "dispatched but never registered"
+    legacy_cases = set(re.findall(r'case "(intel_[a-z0-9_]+)"', dispatch_src))
+    handled = legacy_cases | set(tools_pkg.ALL_HANDLERS)
+    assert registered - handled == set(), "registered but never dispatched"
+    assert handled - registered == set(), "dispatched but never registered"
+    overlap = legacy_cases & set(tools_pkg.ALL_HANDLERS)
+    assert overlap == set(), f"tool handled twice (legacy + modular): {overlap}"
+
+
+def test_aggregate_refuses_drift_and_collisions() -> None:
+    """The import-time guarantee has to be falsifiable: a module whose
+    TOOLS and HANDLERS disagree, or that collides with an existing
+    name, must refuse to aggregate."""
+    import types
+
+    from mcp.types import Tool as _Tool
+
+    from world_intel_mcp import tools as tools_pkg
+
+    drifty = types.SimpleNamespace(
+        __name__="drifty",
+        TOOLS=[
+            _Tool(
+                name="intel_fake",
+                description="x",
+                inputSchema={"type": "object", "properties": {}},
+            )
+        ],
+        HANDLERS={},
+    )
+    with pytest.raises(RuntimeError, match="drift"):
+        tools_pkg.aggregate([drifty])
+
+    async def _h(arguments):
+        return {}
+
+    colliding = types.SimpleNamespace(
+        __name__="colliding",
+        TOOLS=[
+            _Tool(
+                name="intel_status",
+                description="x",
+                inputSchema={"type": "object", "properties": {}},
+            )
+        ],
+        HANDLERS={"intel_status": _h},
+    )
+    from world_intel_mcp.tools import system as system_mod
+
+    with pytest.raises(RuntimeError, match="collision"):
+        tools_pkg.aggregate([system_mod, colliding])
 
 
 def test_tool_count_matches_documented_surface(server) -> None:
