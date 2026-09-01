@@ -569,7 +569,7 @@ fail-quietly bugs below were fixed in the same-day follow-up
 | Silent-empty degradation without a marker on RSS/API failure | `sources/prediction.py` (documented as intended), `sources/maritime.py`, `sources/news.py` RSS path, `sources/fleet.py` `_safe` wrapper | silent degradation | :red_circle: |
 | 33 CLI commands rendered upstream errors as healthy empty states | `cli.py` | fail-reads-as-success | :white_check_mark: Fixed in 0.6.0 (shared bail-on-error path; 43 failing-first tests) |
 | Rich markup swallowed lowercase bracketed values and let remote titles inject markup | `cli.py` | output corruption | :white_check_mark: Fixed in 0.6.0 (per-site escaping; injection test) |
-| Remote data inside Rich TABLE cells is not markup-escaped (labels/free text outside tables are); a bracketed sequence in e.g. an earthquake place name can still be swallowed or raise MarkupError | `cli.py` | output corruption | :red_circle: Follow-up; needs a cell-escaping convention that preserves the CLI styling |
+| Remote data inside Rich TABLE cells was not markup-escaped | `cli.py` | output corruption | :white_check_mark: Fixed in 0.6.0 (`_cell` Text-wrapping convention, 11 injection tests; error styles unified across all 53 commands) |
 
 ### Phase 25 (planned): Missing Domains
 Verified absent from `sources/` on 2026-09-01 (grep, not memory):

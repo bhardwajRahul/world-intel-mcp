@@ -22,6 +22,17 @@ collector.
   a feed title containing "[/]" renders literally instead of crashing
   the command with a MarkupError. Escaping is per-site; the CLI's own
   color styling is untouched.
+- Remote data inside Rich TABLE cells is injection-safe too: cell
+  values from upstream APIs render via rich.text.Text (literal text,
+  column styling preserved), with interpolated values escaped where a
+  cell deliberately keeps markup. 11 injection tests cover both the
+  swallow and the crash mode; static-config columns are documented as
+  deliberately unwrapped.
+- The two coexisting error styles are unified: the 17 commands that
+  dumped raw JSON on error in table mode now use the same red Error:
+  line as everyone else, and --json-output passes the raw dict
+  through on all 53 commands (intel report previously ignored the
+  flag entirely).
 
 ### Added
 - The four 0.5.0 domains (weather alerts, launch schedule, volcano
@@ -29,10 +40,11 @@ collector.
   roster: 46 -> 50 sources, with the roster-count invariant test,
   domain groups, and vector-store category mappings updated together.
 
-### Known issues
-- Remote data rendered inside Rich table cells is not yet
-  markup-escaped (the styling lives in those same cells; sweeping
-  ~50 table bodies is its own change). Tracked in ROADMAP Phase 24.5.
+### Credits
+- Richard Barron (@RichardBarron27, Red Specter Security Research)
+  for the external security report (#21) that prompted the
+  SECURITY.md threat model and the cache-permissions hardening
+  shipped in 0.4.0.
 
 ## 0.5.0 - 2026-09-01
 
