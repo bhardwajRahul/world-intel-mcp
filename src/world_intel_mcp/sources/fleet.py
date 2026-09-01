@@ -98,30 +98,40 @@ async def fetch_fleet_report(fetcher) -> dict:
     for name, t in theaters.items():
         if not isinstance(t, dict):
             continue
-        theater_summary.append({
-            "name": name,
-            "aircraft_count": t.get("count", 0),
-            "top_types": t.get("top_types", [])[:3],
-        })
+        theater_summary.append(
+            {
+                "name": name,
+                "aircraft_count": t.get("count", 0),
+                "top_types": t.get("top_types", [])[:3],
+            }
+        )
 
     # Waterway summary
     waterway_summary = []
     for ww in waterways:
-        waterway_summary.append({
-            "name": ww.get("name", "Unknown"),
-            "status": ww.get("status", "unknown"),
-            "warning_count": ww.get("warning_count", 0),
-        })
+        waterway_summary.append(
+            {
+                "name": ww.get("name", "Unknown"),
+                "status": ww.get("status", "unknown"),
+                # fetch_vessel_snapshot emits the count as "naval_warnings";
+                # "warning_count" is kept as a fallback for older shapes.
+                # Reading only "warning_count" made this 0 in every real
+                # fleet report (the silent-zero class).
+                "warning_count": ww.get("naval_warnings", ww.get("warning_count", 0)),
+            }
+        )
 
     # Active surges
     active_surges = []
     for s in surges:
-        active_surges.append({
-            "region": s.get("region", "Unknown"),
-            "aircraft_count": s.get("aircraft_count", 0),
-            "baseline": s.get("baseline", 0),
-            "ratio": s.get("ratio", 0),
-        })
+        active_surges.append(
+            {
+                "region": s.get("region", "Unknown"),
+                "aircraft_count": s.get("aircraft_count", 0),
+                "baseline": s.get("baseline", 0),
+                "ratio": s.get("ratio", 0),
+            }
+        )
 
     return {
         "readiness_level": readiness_level,

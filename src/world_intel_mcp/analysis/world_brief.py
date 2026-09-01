@@ -65,33 +65,45 @@ async def fetch_world_brief(fetcher) -> dict:
     # Section 2: Focal Areas (where attention should be)
     focal_areas = []
     for fp in (focal_data.get("focal_points") or [])[:8]:
-        focal_areas.append({
-            "entity": fp.get("entity", "unknown"),
-            "entity_type": fp.get("entity_type", "unknown"),
-            "signal_count": fp.get("signal_count", 0),
-            "domains": fp.get("domains", []),
-        })
+        focal_areas.append(
+            {
+                "entity": fp.get("entity", "unknown"),
+                "entity_type": fp.get("entity_type", "unknown"),
+                "signal_count": fp.get("signal_count", 0),
+                "domains": fp.get("domains", []),
+            }
+        )
 
     # Section 3: Top Stories (from news clusters)
     top_stories = []
     for cluster in (cluster_data.get("clusters") or [])[:6]:
-        top_stories.append({
-            "topic_keywords": cluster.get("keywords", [])[:5],
-            "article_count": cluster.get("article_count", 0),
-            "sources": cluster.get("sources", [])[:3],
-            "headline": (cluster.get("items") or [{}])[0].get("title", "") if cluster.get("items") else "",
-        })
+        top_stories.append(
+            {
+                "topic_keywords": cluster.get("keywords", [])[:5],
+                # fetch_news_clusters emits the member count as "size";
+                # "article_count" is kept as a fallback for older callers.
+                # Reading only "article_count" made this 0 in every real
+                # brief (the silent-zero class).
+                "article_count": cluster.get("size", cluster.get("article_count", 0)),
+                "sources": cluster.get("sources", [])[:3],
+                "headline": (cluster.get("items") or [{}])[0].get("title", "")
+                if cluster.get("items")
+                else "",
+            }
+        )
 
     # Section 4: Anomalies (what's unusual today)
     anomalies = []
     for a in (anomaly_data.get("anomalies") or [])[:6]:
-        anomalies.append({
-            "metric": a.get("key", "unknown"),
-            "z_score": a.get("z_score", 0),
-            "current_value": a.get("current_value", 0),
-            "baseline_mean": a.get("baseline_mean", 0),
-            "description": a.get("description", ""),
-        })
+        anomalies.append(
+            {
+                "metric": a.get("key", "unknown"),
+                "z_score": a.get("z_score", 0),
+                "current_value": a.get("current_value", 0),
+                "baseline_mean": a.get("baseline_mean", 0),
+                "description": a.get("description", ""),
+            }
+        )
 
     # Section 5: Trending Threats (from keyword spikes + CVE/APT extraction)
     trending = {
