@@ -171,6 +171,207 @@ def segment_distance_km(
     return abs(xt) * _EARTH_RADIUS_KM
 
 
+# ---------------------------------------------------------------------------
+# Polygon + corridor geometry (Phase 23)
+# ---------------------------------------------------------------------------
+
+MIN_POLYGON_VERTICES = 3
+MAX_SHAPE_POINTS = 64
+MIN_CORRIDOR_WIDTH_KM = 1.0
+MAX_CORRIDOR_WIDTH_KM = 500.0
+_MAX_POLYGON_BOUNDING_KM = MAX_RADIUS_KM
+_MAX_CORRIDOR_BOUNDING_KM = 5000.0
+
+
+def _shift_lon(lon: float, ref_lon: float) -> float:
+    """Longitude re-expressed in the continuous window ref_lon +/- 180,
+    so dateline-straddling shapes become ordinary planar polygons."""
+    return ((lon - ref_lon + 180.0) % 360.0) - 180.0
+
+
+def polygon_centroid(vertices: list) -> tuple[float, float]:
+    """Arithmetic centroid of the vertices, dateline-aware (longitudes
+    are averaged in a window centered on the first vertex). A vertex
+    average, not an area centroid: good enough for the bounding-circle
+    prefilters and distance annotations it feeds."""
+    ref = float(vertices[0][1])
+    lat = sum(float(v[0]) for v in vertices) / len(vertices)
+    shifted = sum(_shift_lon(float(v[1]), ref) for v in vertices) / len(vertices)
+    lon = shifted + ref
+    if lon > 180.0:
+        lon -= 360.0
+    elif lon < -180.0:
+        lon += 360.0
+    return (lat, lon)
+
+
+def point_in_polygon(lat: float, lon: float, vertices: list) -> bool:
+    """Ray-casting point-in-polygon on the lat/lon plane, dateline-aware
+    (all longitudes shifted into a window centered on the first vertex).
+    Treats edges as straight lines in coordinate space, which is the
+    same approximation the rest of this module's bounding boxes make;
+    fine at AOI scales, not for continent-sized polygons near the poles."""
+    ref = float(vertices[0][1])
+    px = _shift_lon(lon, ref)
+    py = lat
+    inside = False
+    n = len(vertices)
+    for i in range(n):
+        y1, x1 = float(vertices[i][0]), _shift_lon(float(vertices[i][1]), ref)
+        y2, x2 = (
+            float(vertices[(i + 1) % n][0]),
+            _shift_lon(float(vertices[(i + 1) % n][1]), ref),
+        )
+        if (y1 > py) != (y2 > py):
+            x_cross = x1 + (py - y1) * (x2 - x1) / (y2 - y1)
+            if px < x_cross:
+                inside = not inside
+    return inside
+
+
+def corridor_distance_km(lat: float, lon: float, waypoints: list) -> float:
+    """Distance from a point to a corridor's route: the minimum
+    great-circle segment distance over consecutive waypoint pairs."""
+    return min(
+        segment_distance_km(
+            lat,
+            lon,
+            float(a[0]),
+            float(a[1]),
+            float(b[0]),
+            float(b[1]),
+        )
+        for a, b in zip(waypoints, waypoints[1:])
+    )
+
+
+def _valid_points(points: Any, min_points: int) -> str | None:
+    if not isinstance(points, list) or len(points) < min_points:
+        return f"expected a list of at least {min_points} [lat, lon] pairs."
+    if len(points) > MAX_SHAPE_POINTS:
+        return f"at most {MAX_SHAPE_POINTS} points are supported."
+    for p in points:
+        if not isinstance(p, (list, tuple)) or len(p) != 2:
+            return "each point must be a [lat, lon] pair."
+        p_lat, p_lon = p
+        for v in (p_lat, p_lon):
+            if not isinstance(v, (int, float)) or isinstance(v, bool):
+                return f"coordinates must be numbers (got {v!r})."
+        if not (-90.0 <= p_lat <= 90.0):
+            return f"lat must be between -90 and 90 (got {p_lat})."
+        if not (-180.0 <= p_lon <= 180.0):
+            return f"lon must be between -180 and 180 (got {p_lon})."
+    return None
+
+
+def validate_polygon(name: Any, vertices: Any) -> str | None:
+    if not isinstance(name, str) or not name.strip():
+        return "name must be a non-empty string."
+    err = _valid_points(vertices, MIN_POLYGON_VERTICES)
+    if err:
+        return f"vertices: {err}"
+    ref = float(vertices[0][1])
+    shifted = [_shift_lon(float(v[1]), ref) for v in vertices]
+    if max(shifted) - min(shifted) > 180.0:
+        return "polygon spans more than 180 degrees of longitude."
+    c_lat, c_lon = polygon_centroid(vertices)
+    bounding = max(
+        haversine_km(c_lat, c_lon, float(v[0]), float(v[1])) for v in vertices
+    )
+    if bounding > _MAX_POLYGON_BOUNDING_KM:
+        return (
+            f"polygon is too large: bounding radius {bounding:.0f} km exceeds "
+            f"{_MAX_POLYGON_BOUNDING_KM:.0f} km."
+        )
+    return None
+
+
+def validate_corridor(name: Any, waypoints: Any, width_km: Any) -> str | None:
+    if not isinstance(name, str) or not name.strip():
+        return "name must be a non-empty string."
+    err = _valid_points(waypoints, 2)
+    if err:
+        return f"waypoints: {err}"
+    if not isinstance(width_km, (int, float)) or isinstance(width_km, bool):
+        return f"width_km must be a number (got {width_km!r})."
+    if not (MIN_CORRIDOR_WIDTH_KM <= width_km <= MAX_CORRIDOR_WIDTH_KM):
+        return (
+            f"width_km must be between {MIN_CORRIDOR_WIDTH_KM} and "
+            f"{MAX_CORRIDOR_WIDTH_KM} (got {width_km})."
+        )
+    c_lat, c_lon = polygon_centroid(waypoints)
+    bounding = (
+        max(haversine_km(c_lat, c_lon, float(w[0]), float(w[1])) for w in waypoints)
+        + float(width_km) / 2.0
+    )
+    if bounding > _MAX_CORRIDOR_BOUNDING_KM:
+        return (
+            f"corridor is too large: bounding radius {bounding:.0f} km exceeds "
+            f"{_MAX_CORRIDOR_BOUNDING_KM:.0f} km."
+        )
+    return None
+
+
+def aoi_contains(aoi_row: dict, lat: float, lon: float) -> bool:
+    """Shape-aware membership: is the point inside this AOI's actual
+    shape (not just its bounding circle)?"""
+    kind = aoi_row.get("kind", "circle")
+    if kind == "polygon":
+        return point_in_polygon(lat, lon, aoi_row["geometry"]["vertices"])
+    if kind == "corridor":
+        geometry = aoi_row["geometry"]
+        return (
+            corridor_distance_km(lat, lon, geometry["waypoints"])
+            <= float(geometry["width_km"]) / 2.0
+        )
+    return (
+        haversine_km(aoi_row["lat"], aoi_row["lon"], lat, lon) <= aoi_row["radius_km"]
+    )
+
+
+def _aoi_annotation_distance(aoi_row: dict, lat: float, lon: float) -> float:
+    """The distance_km an item is annotated and sorted with: distance to
+    the center for circles and polygons, distance to the route for
+    corridors (a corridor has no meaningful single center)."""
+    if aoi_row.get("kind") == "corridor":
+        return corridor_distance_km(lat, lon, aoi_row["geometry"]["waypoints"])
+    return haversine_km(aoi_row["lat"], aoi_row["lon"], lat, lon)
+
+
+def filter_by_aoi(
+    items: list[dict],
+    aoi_row: dict,
+    lat_key: str = "latitude",
+    lon_key: str = "longitude",
+) -> list[dict]:
+    """Shape-aware version of ``filter_by_radius``: keeps items inside
+    the AOI's actual shape, annotated with ``distance_km`` and sorted
+    nearest first. For circle AOIs the result is identical to
+    ``filter_by_radius`` (verified by test); items with missing or
+    unparseable coordinates are dropped, same as there."""
+    out = []
+    for item in items:
+        raw_lat, raw_lon = item.get(lat_key), item.get(lon_key)
+        if raw_lat is None or raw_lon is None:
+            continue
+        try:
+            p_lat, p_lon = float(raw_lat), float(raw_lon)
+        except (TypeError, ValueError):
+            continue
+        if not aoi_contains(aoi_row, p_lat, p_lon):
+            continue
+        out.append(
+            {
+                **item,
+                "distance_km": round(
+                    _aoi_annotation_distance(aoi_row, p_lat, p_lon), 1
+                ),
+            }
+        )
+    out.sort(key=lambda i: i["distance_km"])
+    return out
+
+
 def _distance_or_none(
     lat: float, lon: float, item_lat: Any, item_lon: Any
 ) -> float | None:
@@ -269,10 +470,24 @@ class AOIStore:
                 lat REAL NOT NULL,
                 lon REAL NOT NULL,
                 radius_km REAL NOT NULL,
-                created_at REAL NOT NULL
+                created_at REAL NOT NULL,
+                kind TEXT NOT NULL DEFAULT 'circle',
+                geometry TEXT
             )
             """
         )
+        # Migration for databases created before shapes existed (v0.4 and
+        # earlier): old rows read as circles, which is exactly what they
+        # were. ALTER ADD COLUMN is a no-op-safe idempotent check.
+        existing_cols = {
+            r[1] for r in self._conn.execute("PRAGMA table_info(aois)").fetchall()
+        }
+        if "kind" not in existing_cols:
+            self._conn.execute(
+                "ALTER TABLE aois ADD COLUMN kind TEXT NOT NULL DEFAULT 'circle'"
+            )
+        if "geometry" not in existing_cols:
+            self._conn.execute("ALTER TABLE aois ADD COLUMN geometry TEXT")
         self._conn.execute(
             """
             CREATE TABLE IF NOT EXISTS aoi_snapshots (
@@ -288,31 +503,60 @@ class AOIStore:
     def _key(name: str) -> str:
         return name.strip().lower()
 
+    _COLUMNS = "name_key, name, lat, lon, radius_km, created_at, kind, geometry"
+
     @staticmethod
     def _row_to_dict(row: tuple) -> dict[str, Any]:
-        _name_key, name, lat, lon, radius_km, created_at = row
+        _name_key, name, lat, lon, radius_km, created_at, kind, geometry = row
+        parsed_geometry = None
+        if geometry:
+            try:
+                parsed_geometry = json.loads(geometry)
+            except (TypeError, ValueError):
+                parsed_geometry = None
         return {
             "name": name,
             "lat": lat,
             "lon": lon,
             "radius_km": radius_km,
             "created_at": created_at,
+            "kind": kind or "circle",
+            "geometry": parsed_geometry,
         }
 
     def define(
-        self, name: str, lat: float, lon: float, radius_km: float
+        self,
+        name: str,
+        lat: float,
+        lon: float,
+        radius_km: float,
+        kind: str = "circle",
+        geometry: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Insert a new AOI. Raises ``AOIAlreadyExists`` (carrying the
-        existing row) if the name is already taken."""
+        """Insert a new AOI. For polygons and corridors, lat/lon/radius_km
+        are the DERIVED bounding circle (centroid + radius reaching the
+        farthest point), which is what every coarse prefilter in this
+        module consumes; ``geometry`` carries the exact shape. Raises
+        ``AOIAlreadyExists`` (carrying the existing row) if the name is
+        already taken."""
         existing = self.get(name)
         if existing is not None:
             raise AOIAlreadyExists(existing)
         clean_name = name.strip()
         now = time.time()
         self._conn.execute(
-            "INSERT INTO aois (name_key, name, lat, lon, radius_km, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (self._key(name), clean_name, lat, lon, radius_km, now),
+            "INSERT INTO aois (name_key, name, lat, lon, radius_km, created_at, "
+            "kind, geometry) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                self._key(name),
+                clean_name,
+                lat,
+                lon,
+                radius_km,
+                now,
+                kind,
+                json.dumps(geometry) if geometry is not None else None,
+            ),
         )
         self._conn.commit()
         return {
@@ -321,20 +565,20 @@ class AOIStore:
             "lon": lon,
             "radius_km": radius_km,
             "created_at": now,
+            "kind": kind,
+            "geometry": geometry,
         }
 
     def get(self, name: str) -> dict[str, Any] | None:
         row = self._conn.execute(
-            "SELECT name_key, name, lat, lon, radius_km, created_at "
-            "FROM aois WHERE name_key = ?",
+            f"SELECT {self._COLUMNS} FROM aois WHERE name_key = ?",
             (self._key(name),),
         ).fetchone()
         return self._row_to_dict(row) if row else None
 
     def list_all(self) -> list[dict[str, Any]]:
         rows = self._conn.execute(
-            "SELECT name_key, name, lat, lon, radius_km, created_at "
-            "FROM aois ORDER BY name"
+            f"SELECT {self._COLUMNS} FROM aois ORDER BY name"
         ).fetchall()
         return [self._row_to_dict(r) for r in rows]
 
@@ -390,7 +634,9 @@ class AOIStore:
                 (new_key, old_key),
             )
         self._conn.commit()
-        return merged
+        updated = self.get(merged_name)
+        assert updated is not None  # the row was just written
+        return updated
 
     # -- Change-detection snapshots -----------------------------------
 
@@ -448,6 +694,67 @@ def define_aoi(store: AOIStore, name: Any, lat: Any, lon: Any, radius_km: Any) -
     return {"aoi": aoi, "source": "aoi-define", "timestamp": _utc_now_iso()}
 
 
+def define_polygon_aoi(store: AOIStore, name: Any, vertices: Any) -> dict:
+    """Define a polygon AOI from a list of [lat, lon] vertices. The
+    stored lat/lon/radius_km are the derived bounding circle (centroid
+    plus radius reaching the farthest vertex), which is what the coarse
+    prefilters consume; membership tests use the exact polygon."""
+    error = validate_polygon(name, vertices)
+    if error:
+        return {"error": error}
+    clean_vertices = [[float(v[0]), float(v[1])] for v in vertices]
+    c_lat, c_lon = polygon_centroid(clean_vertices)
+    bounding_km = max(haversine_km(c_lat, c_lon, v[0], v[1]) for v in clean_vertices)
+    try:
+        aoi = store.define(
+            name,
+            c_lat,
+            c_lon,
+            max(MIN_RADIUS_KM, bounding_km),
+            kind="polygon",
+            geometry={"vertices": clean_vertices},
+        )
+    except AOIAlreadyExists as exc:
+        return {
+            "error": f"AOI '{name.strip()}' already exists.",
+            "existing": exc.existing,
+        }
+    return {"aoi": aoi, "source": "aoi-define-polygon", "timestamp": _utc_now_iso()}
+
+
+def define_corridor_aoi(
+    store: AOIStore, name: Any, waypoints: Any, width_km: Any
+) -> dict:
+    """Define a corridor AOI: a route of [lat, lon] waypoints plus a
+    total width in km. Membership means within width/2 of the
+    great-circle route; the stored lat/lon/radius_km are the derived
+    bounding circle for the coarse prefilters."""
+    error = validate_corridor(name, waypoints, width_km)
+    if error:
+        return {"error": error}
+    clean_waypoints = [[float(w[0]), float(w[1])] for w in waypoints]
+    c_lat, c_lon = polygon_centroid(clean_waypoints)
+    bounding_km = (
+        max(haversine_km(c_lat, c_lon, w[0], w[1]) for w in clean_waypoints)
+        + float(width_km) / 2.0
+    )
+    try:
+        aoi = store.define(
+            name,
+            c_lat,
+            c_lon,
+            max(MIN_RADIUS_KM, bounding_km),
+            kind="corridor",
+            geometry={"waypoints": clean_waypoints, "width_km": float(width_km)},
+        )
+    except AOIAlreadyExists as exc:
+        return {
+            "error": f"AOI '{name.strip()}' already exists.",
+            "existing": exc.existing,
+        }
+    return {"aoi": aoi, "source": "aoi-define-corridor", "timestamp": _utc_now_iso()}
+
+
 def list_aois(store: AOIStore) -> dict:
     aois = store.list_all()
     return {
@@ -496,12 +803,31 @@ def update_aoi(
             "error": "Nothing to update: provide at least one of "
             "new_name, lat, lon, radius_km."
         }
+    if existing.get("kind", "circle") != "circle" and any(
+        v is not None for v in (lat, lon, radius_km)
+    ):
+        return {
+            "error": f"AOI '{existing['name']}' is a {existing['kind']}; its "
+            "lat/lon/radius_km are derived from the shape and cannot be set "
+            "directly. Rename is allowed; to change the shape, delete and "
+            "re-define it."
+        }
 
     merged_name = new_name if new_name is not None else existing["name"]
     merged_lat = lat if lat is not None else existing["lat"]
     merged_lon = lon if lon is not None else existing["lon"]
     merged_radius = radius_km if radius_km is not None else existing["radius_km"]
-    error = validate_aoi_params(merged_name, merged_lat, merged_lon, merged_radius)
+    if existing.get("kind", "circle") == "circle":
+        error = validate_aoi_params(merged_name, merged_lat, merged_lon, merged_radius)
+    else:
+        # Non-circle rename: only the name is user-settable; the derived
+        # bounding values (e.g. a corridor's >2000 km radius) must not be
+        # re-validated against circle limits.
+        error = (
+            None
+            if isinstance(merged_name, str) and merged_name.strip()
+            else "name must be a non-empty string."
+        )
     if error:
         return {"error": error}
 
@@ -556,7 +882,15 @@ def _nearby_points(
         dist = _distance_or_none(lat, lon, item.get("lat"), item.get("lon"))
         if dist is None or dist > radius_km:
             continue
-        entry = {"name": item.get("name"), "distance_km": round(dist, 1)}
+        # Coordinates ride along so shape-aware AOIs (polygon/corridor)
+        # can refine this bounding-circle candidate list to exact
+        # membership.
+        entry = {
+            "name": item.get("name"),
+            "distance_km": round(dist, 1),
+            "lat": item.get("lat"),
+            "lon": item.get("lon"),
+        }
         for key in extra_keys:
             entry[key] = item.get(key)
         out.append(entry)
@@ -856,21 +1190,23 @@ async def _fetch_military_merged(fetcher, bboxes: list[str]) -> dict:
     return out
 
 
-async def _gather_scoped_domains(
-    fetcher, lat: float, lon: float, radius_km: float, aoi_name: str
-) -> dict[str, dict]:
+async def _gather_scoped_domains(fetcher, aoi_row: dict) -> dict[str, dict]:
     """Fetch all six dynamic domains in parallel and scope each to the
     AOI. The single shared scoping path for ``fetch_aoi_brief`` and
     ``fetch_aoi_changes``, so the two tools can never disagree about
     what is inside the fence.
 
-    Per domain: ``{"items": [...]}`` (radius-filtered, annotated with
-    ``distance_km``, nearest first) or ``{"error": msg}``. Military may
-    additionally carry ``partial_errors`` (antimeridian AOIs query two
-    boxes; one can fail alone). News items are the raw articles —
-    scoped by AOI-name mention, not geography."""
+    Per domain: ``{"items": [...]}`` (shape-filtered via
+    ``filter_by_aoi``, annotated with ``distance_km``, nearest first) or
+    ``{"error": msg}``. Coarse prefilters (military bboxes, wildfire
+    regions) use the AOI's bounding circle; membership uses the exact
+    shape. Military may additionally carry ``partial_errors``
+    (antimeridian AOIs query two boxes; one can fail alone). News items
+    are the raw articles — scoped by AOI-name mention, not geography."""
     from ..sources import aviation, conflict, news, seismology
 
+    lat, lon, radius_km = aoi_row["lat"], aoi_row["lon"], aoi_row["radius_km"]
+    aoi_name = aoi_row["name"]
     bboxes = bboxes_from_radius_km(lat, lon, radius_km)
     wildfire_regions = _overlapping_wildfire_regions(lat, lon, radius_km)
 
@@ -903,7 +1239,7 @@ async def _gather_scoped_domains(
             return
         items = result.get(list_key, []) if isinstance(result, dict) else []
         entry: dict[str, Any] = {
-            "items": filter_by_radius(items, lat, lon, radius_km, lat_key, lon_key)
+            "items": filter_by_aoi(items, aoi_row, lat_key, lon_key)
         }
         if isinstance(result, dict) and result.get("partial_errors"):
             entry["partial_errors"] = result["partial_errors"]
@@ -950,8 +1286,9 @@ async def fetch_aoi_brief(fetcher, store: AOIStore, name: Any) -> dict:
 
     lat, lon, radius_km = aoi["lat"], aoi["lon"], aoi["radius_km"]
     aoi_name = aoi["name"]
+    aoi_kind = aoi.get("kind", "circle")
 
-    scoped = await _gather_scoped_domains(fetcher, lat, lon, radius_km, aoi_name)
+    scoped = await _gather_scoped_domains(fetcher, aoi)
 
     sources: list[dict] = []
     citations: dict[str, list[int]] = {}
@@ -1092,7 +1429,28 @@ async def fetch_aoi_brief(fetcher, store: AOIStore, name: Any) -> dict:
         _line("news", f"- [{n}] {title} ({art.get('domain') or 'unknown source'})")
 
     # Nearby static infrastructure -------------------------------------
+    # Candidates come from the bounding circle; for polygon/corridor AOIs
+    # the point categories are then refined to the exact shape. Line
+    # features (pipelines, cables) keep bounding-circle matching, named
+    # honestly below rather than silently approximated.
     infra = nearby_infrastructure(lat, lon, radius_km)
+    _LINE_CATEGORIES = {"pipelines", "undersea_cables"}
+    if aoi_kind != "circle":
+        for category, items in infra.items():
+            if category in _LINE_CATEGORIES:
+                continue
+            infra[category] = [
+                item
+                for item in items
+                if item.get("lat") is not None
+                and item.get("lon") is not None
+                and aoi_contains(aoi, float(item["lat"]), float(item["lon"]))
+            ]
+        if infra["pipelines"] or infra["undersea_cables"]:
+            data_gaps.append(
+                f"Pipelines/undersea cables: matched against the bounding "
+                f"circle, not the exact {aoi_kind} shape."
+            )
     for category, items in infra.items():
         counts[category] = len(items)
         for item in items:
@@ -1105,9 +1463,23 @@ async def fetch_aoi_brief(fetcher, store: AOIStore, name: Any) -> dict:
             _line(category, f"- [{n}] {item['name']} ({item['distance_km']} km)")
 
     # --- Markdown ---------------------------------------------------------
+    if aoi_kind == "polygon":
+        shape_line = (
+            f"Polygon: {len(aoi['geometry']['vertices'])} vertices "
+            f"(bounding center {lat:.4f}, {lon:.4f}; radius {radius_km:.0f} km)"
+        )
+    elif aoi_kind == "corridor":
+        geometry = aoi["geometry"]
+        shape_line = (
+            f"Corridor: {len(geometry['waypoints'])} waypoints, width "
+            f"{geometry['width_km']:.0f} km (bounding center {lat:.4f}, "
+            f"{lon:.4f}; radius {radius_km:.0f} km)"
+        )
+    else:
+        shape_line = f"Center: {lat}, {lon} (radius {radius_km} km)"
     md_parts = [
         f"# AOI Brief: {aoi_name}",
-        f"Center: {lat}, {lon} (radius {radius_km} km)",
+        shape_line,
         "",
     ]
     section_order = [
@@ -1133,7 +1505,13 @@ async def fetch_aoi_brief(fetcher, store: AOIStore, name: Any) -> dict:
     cited = _has_valid_citation(markdown, len(sources))
 
     return {
-        "aoi": {"name": aoi_name, "lat": lat, "lon": lon, "radius_km": radius_km},
+        "aoi": {
+            "name": aoi_name,
+            "lat": lat,
+            "lon": lon,
+            "radius_km": radius_km,
+            "kind": aoi_kind,
+        },
         "markdown": markdown,
         "counts": counts,
         "sources": sources,
@@ -1181,11 +1559,9 @@ async def fetch_aoi_escalation(fetcher, store: AOIStore, name: Any) -> dict:
     if isinstance(acled_result, dict) and acled_result.get("error"):
         data_gaps.append(f"Conflict events: {acled_result['error']}")
     else:
-        events = filter_by_radius(
+        events = filter_by_aoi(
             acled_result.get("events", []) if isinstance(acled_result, dict) else [],
-            lat,
-            lon,
-            radius_km,
+            aoi,
             "latitude",
             "longitude",
         )
@@ -1204,11 +1580,9 @@ async def fetch_aoi_escalation(fetcher, store: AOIStore, name: Any) -> dict:
             mil_result.get("partial_errors", []) if isinstance(mil_result, dict) else []
         ):
             data_gaps.append(f"Military flights: partial coverage: {partial}")
-        aircraft = filter_by_radius(
+        aircraft = filter_by_aoi(
             mil_result.get("aircraft", []) if isinstance(mil_result, dict) else [],
-            lat,
-            lon,
-            radius_km,
+            aoi,
             "latitude",
             "longitude",
         )
@@ -1231,7 +1605,13 @@ async def fetch_aoi_escalation(fetcher, store: AOIStore, name: Any) -> dict:
     )
 
     return {
-        "aoi": {"name": aoi_name, "lat": lat, "lon": lon, "radius_km": radius_km},
+        "aoi": {
+            "name": aoi_name,
+            "lat": lat,
+            "lon": lon,
+            "radius_km": radius_km,
+            "kind": aoi.get("kind", "circle"),
+        },
         "unavailable_components": ["news", "convergence"],
         "data_gaps": data_gaps,
         "source": "aoi-escalation",
@@ -1314,7 +1694,7 @@ async def fetch_aoi_changes(fetcher, store: AOIStore, name: Any) -> dict:
     lat, lon, radius_km = aoi["lat"], aoi["lon"], aoi["radius_km"]
     aoi_name = aoi["name"]
 
-    scoped = await _gather_scoped_domains(fetcher, lat, lon, radius_km, aoi_name)
+    scoped = await _gather_scoped_domains(fetcher, aoi)
 
     previous = store.get_snapshot(aoi_name)
     prev_domains: dict[str, dict[str, str]] = previous["domains"] if previous else {}
@@ -1367,7 +1747,13 @@ async def fetch_aoi_changes(fetcher, store: AOIStore, name: Any) -> dict:
     store.save_snapshot(aoi_name, next_domains)
 
     return {
-        "aoi": {"name": aoi_name, "lat": lat, "lon": lon, "radius_km": radius_km},
+        "aoi": {
+            "name": aoi_name,
+            "lat": lat,
+            "lon": lon,
+            "radius_km": radius_km,
+            "kind": aoi.get("kind", "circle"),
+        },
         "baseline": baseline,
         "previous_taken_at": (
             datetime.fromtimestamp(previous["taken_at"], tz=timezone.utc).strftime(

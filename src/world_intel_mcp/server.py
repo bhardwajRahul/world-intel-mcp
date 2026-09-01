@@ -106,6 +106,10 @@ from .sources import (
     environmental,
     usni_fleet,
     central_banks,
+    weather,
+    launches,
+    volcano,
+    cyclones,
 )
 
 logging.basicConfig(
@@ -1858,6 +1862,62 @@ TOOLS: list[Tool] = [
         },
     ),
     Tool(
+        name="intel_aoi_define_polygon",
+        description="Define a polygon AOI/geofence: a named area bounded by 3-64 [lat, lon] vertices (a border region, a strait, an EEZ - shapes a radius cannot express). Works with every intel_aoi_* tool: briefs, escalation, and change detection scope to the exact polygon (line-feature infrastructure - pipelines, cables - matches the bounding circle, disclosed in data_gaps). Polygons may cross the antimeridian; they may span at most 180 degrees of longitude and a 2000 km bounding radius. Required: name, vertices.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Unique AOI name (case-insensitive)",
+                },
+                "vertices": {
+                    "type": "array",
+                    "description": "3-64 [lat, lon] pairs tracing the polygon",
+                    "items": {
+                        "type": "array",
+                        "items": {"type": "number"},
+                        "minItems": 2,
+                        "maxItems": 2,
+                    },
+                    "minItems": 3,
+                    "maxItems": 64,
+                },
+            },
+            "required": ["name", "vertices"],
+        },
+    ),
+    Tool(
+        name="intel_aoi_define_corridor",
+        description="Define a corridor AOI/geofence: a route of 2-64 [lat, lon] waypoints plus a total width in km (1-500) - a shipping lane, supply road, or cable run. Membership means within width/2 of the great-circle route between consecutive waypoints. Works with every intel_aoi_* tool; distances in results are measured to the route, not to a center. Required: name, waypoints, width_km.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Unique AOI name (case-insensitive)",
+                },
+                "waypoints": {
+                    "type": "array",
+                    "description": "2-64 [lat, lon] pairs tracing the route",
+                    "items": {
+                        "type": "array",
+                        "items": {"type": "number"},
+                        "minItems": 2,
+                        "maxItems": 2,
+                    },
+                    "minItems": 2,
+                    "maxItems": 64,
+                },
+                "width_km": {
+                    "type": "number",
+                    "description": "Total corridor width in km, 1..500",
+                },
+            },
+            "required": ["name", "waypoints", "width_km"],
+        },
+    ),
+    Tool(
         name="intel_aoi_changes",
         description="What entered or left a user-defined AOI since the last sweep: geofence change detection over earthquakes, military flights, ACLED conflict events, wildfire clusters, and news mentions. The first call establishes a baseline (nothing is claimed to have entered or left); subsequent calls report new, departed, and unchanged items per domain. A domain whose fetch failed is reported in data_gaps and excluded from the diff (a failed fetch never reads as 'everything left'), keeping its last real observation for the next successful sweep. Sampled aviation is excluded by design: a 1-in-10 sample churns every sweep. Required: name (must already be defined via intel_aoi_define).",
         inputSchema={
@@ -1898,6 +1958,53 @@ TOOLS: list[Tool] = [
                 },
             },
         },
+    ),
+    # --- Hazard & Space Domains (4 tools, Phase 25) ---
+    Tool(
+        name="intel_weather_alerts",
+        description="Get active severe weather alerts (CAP) from the US National Weather Service: event, severity, urgency, headline, affected area, effective/expires times. US coverage only - there is no global feed. Lat/lon present only for polygon-based alerts (zone-based alerts return null coordinates rather than fabricated ones). No API key needed. Optional: area (two-letter US state code), severity (Extreme, Severe, Moderate, Minor, Unknown), limit (default 50, applied client-side).",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "area": {
+                    "type": "string",
+                    "description": "Two-letter US state/territory code (e.g. TX)",
+                },
+                "severity": {
+                    "type": "string",
+                    "description": "Filter: Extreme, Severe, Moderate, Minor, or Unknown",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max alerts (default 50, applied client-side)",
+                    "default": 50,
+                },
+            },
+        },
+    ),
+    Tool(
+        name="intel_launch_schedule",
+        description="Get upcoming rocket launches from Launch Library 2: name, provider, vehicle, pad with coordinates, launch time (NET), status, mission description. The free tier allows ~15 requests/hour, so results are cached for an hour; recently launched missions may appear with their final status. No API key needed. Optional: limit (default 20).",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "limit": {
+                    "type": "integer",
+                    "description": "Max launches (default 20)",
+                    "default": 20,
+                },
+            },
+        },
+    ),
+    Tool(
+        name="intel_volcano_activity",
+        description="Get the Smithsonian GVP / USGS Weekly Volcanic Activity Report: volcano name, country, coordinates, activity status (new vs continuing), and summary. Updated weekly (Thursdays); a curated summary of activity meeting GVP reporting criteria, not a comprehensive eruption list. No API key needed.",
+        inputSchema={"type": "object", "properties": {}},
+    ),
+    Tool(
+        name="intel_cyclones",
+        description="Get active tropical cyclones from the US National Hurricane Center: name, classification, intensity (knots), pressure (mb), position, movement, by-basin grouping. Covers the Atlantic, Eastern and Central Pacific basins only - Western Pacific / Indian Ocean storms (JTWC) are not included. Zero storms means a quiet tropics, not an outage; a fetch failure carries an explicit error. No API key needed.",
+        inputSchema={"type": "object", "properties": {}},
     ),
     # --- System (1 tool) ---
     Tool(
@@ -2587,6 +2694,19 @@ async def _dispatch(name: str, arguments: dict[str, Any]) -> Any:
             return aoi.list_aois(_aoi_store)
         case "intel_aoi_delete":
             return aoi.delete_aoi(_aoi_store, name=arguments.get("name"))
+        case "intel_aoi_define_polygon":
+            return aoi.define_polygon_aoi(
+                _aoi_store,
+                name=arguments.get("name"),
+                vertices=arguments.get("vertices"),
+            )
+        case "intel_aoi_define_corridor":
+            return aoi.define_corridor_aoi(
+                _aoi_store,
+                name=arguments.get("name"),
+                waypoints=arguments.get("waypoints"),
+                width_km=arguments.get("width_km"),
+            )
         case "intel_aoi_update":
             return aoi.update_aoi(
                 _aoi_store,
@@ -2628,6 +2748,21 @@ async def _dispatch(name: str, arguments: dict[str, Any]) -> Any:
             )
 
         # System
+        case "intel_weather_alerts":
+            return await weather.fetch_weather_alerts(
+                fetcher,
+                area=arguments.get("area"),
+                severity=arguments.get("severity"),
+                limit=arguments.get("limit", 50),
+            )
+        case "intel_launch_schedule":
+            return await launches.fetch_launch_schedule(
+                fetcher, limit=arguments.get("limit", 20)
+            )
+        case "intel_volcano_activity":
+            return await volcano.fetch_volcano_activity(fetcher)
+        case "intel_cyclones":
+            return await cyclones.fetch_cyclones(fetcher)
         case "intel_status":
             vs_stats = {
                 "enabled": False,

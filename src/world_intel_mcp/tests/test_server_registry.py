@@ -71,11 +71,11 @@ def test_tools_and_dispatch_are_in_one_to_one_parity(server) -> None:
 
 
 def test_tool_count_matches_documented_surface(server) -> None:
-    """122 = 121 intelligence tools + intel_status. If this fails after
+    """128 = 127 intelligence tools + intel_status. If this fails after
     adding a tool, update README.md, ROADMAP.md, and this number in the
     same change: the repo's history shows doc counts drifting stale
     within weeks when nothing enforced them."""
-    assert len(server.TOOLS) == 122
+    assert len(server.TOOLS) == 128
 
 
 @pytest.mark.asyncio
@@ -116,3 +116,35 @@ async def test_dispatch_static_dataset_tool_works(server) -> None:
     assert any(
         b.get("name") == "Norfolk Naval Station" for b in result.get("bases", [])
     )
+
+
+@pytest.mark.asyncio
+async def test_dispatch_polygon_and_corridor_round_trip(server) -> None:
+    """Shape AOIs exist end-to-end through the real dispatcher."""
+    poly = await server._dispatch(
+        "intel_aoi_define_polygon",
+        {
+            "name": "Registry Poly",
+            "vertices": [[39.5, -81.0], [39.5, -79.0], [41.3, -79.0], [41.3, -81.0]],
+        },
+    )
+    assert poly.get("aoi", {}).get("kind") == "polygon"
+
+    corr = await server._dispatch(
+        "intel_aoi_define_corridor",
+        {
+            "name": "Registry Corridor",
+            "waypoints": [[40.0, -80.0], [41.0, -78.0]],
+            "width_km": 40,
+        },
+    )
+    assert corr.get("aoi", {}).get("kind") == "corridor"
+
+    listed = await server._dispatch("intel_aoi_list", {})
+    kinds = {a["name"]: a["kind"] for a in listed["aois"]}
+    assert kinds.get("Registry Poly") == "polygon"
+    assert kinds.get("Registry Corridor") == "corridor"
+
+    for name in ("Registry Poly", "Registry Corridor"):
+        deleted = await server._dispatch("intel_aoi_delete", {"name": name})
+        assert deleted.get("deleted") == name

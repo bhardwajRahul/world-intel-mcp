@@ -998,6 +998,8 @@ def test_delete_aoi_also_deletes_snapshot(store: AOIStore) -> None:
     [
         ("intel_aoi_update", "aoi.update_aoi"),
         ("intel_aoi_changes", "aoi.fetch_aoi_changes"),
+        ("intel_aoi_define_polygon", "aoi.define_polygon_aoi"),
+        ("intel_aoi_define_corridor", "aoi.define_corridor_aoi"),
     ],
 )
 def test_new_aoi_tools_registered_and_dispatched(tool_name: str, fn_name: str) -> None:
@@ -1355,3 +1357,284 @@ async def test_escalation_reports_gap_when_acled_fails(
         fetcher, aoi_store_with_pittsburgh, "Pittsburgh"
     )
     assert any("Conflict events" in g for g in result["data_gaps"])
+
+
+# ---------------------------------------------------------------------------
+# Polygon + corridor AOIs (Phase 23)
+# ---------------------------------------------------------------------------
+
+# A square around Pittsburgh, ~±0.9 deg (~100 km), listed counterclockwise.
+_PGH_SQUARE = [
+    [39.5, -81.0],
+    [39.5, -79.0],
+    [41.3, -79.0],
+    [41.3, -81.0],
+]
+
+# Inside the square's bounding CIRCLE but outside the square itself:
+# the bounding circle around the centroid reaches the corners, so a point
+# due east beyond the square's edge still falls inside the circle.
+_IN_CIRCLE_NOT_SQUARE = (40.4, -78.7)
+
+
+def test_polygon_centroid_of_square() -> None:
+    lat, lon = aoi.polygon_centroid(_PGH_SQUARE)
+    assert lat == pytest.approx(40.4, abs=0.01)
+    assert lon == pytest.approx(-80.0, abs=0.01)
+
+
+def test_point_in_polygon_inside_and_outside() -> None:
+    assert aoi.point_in_polygon(40.4, -80.0, _PGH_SQUARE) is True
+    assert aoi.point_in_polygon(42.0, -80.0, _PGH_SQUARE) is False
+    assert aoi.point_in_polygon(*_IN_CIRCLE_NOT_SQUARE, _PGH_SQUARE) is False
+
+
+def test_point_in_polygon_across_dateline() -> None:
+    # A box straddling lon 180 near Fiji latitudes.
+    box = [[-20.0, 178.0], [-20.0, -178.0], [-15.0, -178.0], [-15.0, 178.0]]
+    assert aoi.point_in_polygon(-17.0, 179.5, box) is True
+    assert aoi.point_in_polygon(-17.0, -179.5, box) is True
+    assert aoi.point_in_polygon(-17.0, 170.0, box) is False
+
+
+def test_point_in_polygon_concave() -> None:
+    # A "U" shape: the notch at the top middle is outside.
+    u = [
+        [0.0, 0.0],
+        [0.0, 3.0],
+        [2.0, 3.0],
+        [2.0, 2.0],
+        [1.0, 2.0],
+        [1.0, 1.0],
+        [2.0, 1.0],
+        [2.0, 0.0],
+    ]
+    assert aoi.point_in_polygon(1.5, 1.5, u) is False  # in the notch
+    assert aoi.point_in_polygon(0.5, 1.5, u) is True  # in the base
+
+
+@pytest.mark.parametrize(
+    "vertices",
+    [
+        [[0, 0], [1, 1]],  # fewer than 3
+        [[0, 0], [95, 1], [1, 1]],  # bad latitude
+        "not-a-list",
+        [[0, 0], [1, "x"], [1, 1]],  # non-numeric
+    ],
+)
+def test_define_polygon_aoi_rejects_invalid(store: AOIStore, vertices) -> None:
+    result = aoi.define_polygon_aoi(store, "Bad Poly", vertices)
+    assert "error" in result
+    assert store.get("Bad Poly") is None
+
+
+def test_define_polygon_aoi_round_trip(store: AOIStore) -> None:
+    result = aoi.define_polygon_aoi(store, "PGH Square", _PGH_SQUARE)
+    assert "error" not in result
+    row = store.get("PGH Square")
+    assert row["kind"] == "polygon"
+    assert row["geometry"]["vertices"] == _PGH_SQUARE
+    # Derived bounding circle: centroid near Pittsburgh, radius reaching
+    # the corners (roughly 125-135 km for this square).
+    assert row["lat"] == pytest.approx(40.4, abs=0.01)
+    assert row["radius_km"] > 100
+    assert row["radius_km"] < 200
+
+
+def test_define_corridor_aoi_round_trip(store: AOIStore) -> None:
+    waypoints = [[40.0, -80.0], [41.0, -78.0], [42.0, -76.0]]
+    result = aoi.define_corridor_aoi(store, "Route A", waypoints, width_km=40.0)
+    assert "error" not in result
+    row = store.get("Route A")
+    assert row["kind"] == "corridor"
+    assert row["geometry"]["waypoints"] == waypoints
+    assert row["geometry"]["width_km"] == 40.0
+
+
+@pytest.mark.parametrize(
+    "waypoints,width",
+    [
+        ([[40.0, -80.0]], 40.0),  # one waypoint is a point, not a route
+        ([[40.0, -80.0], [41.0, -78.0]], 0.2),  # width below minimum
+        ([[40.0, -80.0], [41.0, -78.0]], 800.0),  # width above maximum
+        ([[40.0, -80.0], [200.0, -78.0]], 40.0),  # bad latitude
+    ],
+)
+def test_define_corridor_aoi_rejects_invalid(store: AOIStore, waypoints, width) -> None:
+    result = aoi.define_corridor_aoi(store, "Bad Route", waypoints, width_km=width)
+    assert "error" in result
+    assert store.get("Bad Route") is None
+
+
+def test_filter_by_aoi_polygon_excludes_in_circle_out_of_polygon(
+    store: AOIStore,
+) -> None:
+    """THE load-bearing polygon test: a point inside the bounding circle
+    but outside the polygon must be excluded - otherwise a polygon is
+    just a circle with extra steps."""
+    aoi.define_polygon_aoi(store, "PGH Square", _PGH_SQUARE)
+    row = store.get("PGH Square")
+    items = [
+        {"latitude": 40.4, "longitude": -80.0, "id": "inside"},
+        {
+            "latitude": _IN_CIRCLE_NOT_SQUARE[0],
+            "longitude": _IN_CIRCLE_NOT_SQUARE[1],
+            "id": "circle-only",
+        },
+        {"latitude": 45.0, "longitude": -80.0, "id": "far"},
+    ]
+    kept = aoi.filter_by_aoi(items, row)
+    ids = [i["id"] for i in kept]
+    assert ids == ["inside"]
+    assert kept[0]["distance_km"] >= 0
+
+
+def test_filter_by_aoi_corridor_keeps_along_route_drops_off_route(
+    store: AOIStore,
+) -> None:
+    """THE load-bearing corridor test: a point far from the centroid but
+    within the width of a distant segment is kept; a point near the
+    route's latitude band but off to the side is dropped."""
+    waypoints = [[0.0, -5.0], [0.0, 0.0], [0.0, 5.0]]
+    aoi.define_corridor_aoi(store, "Equator Lane", waypoints, width_km=100.0)
+    row = store.get("Equator Lane")
+    items = [
+        # ~30 km abeam the far-east end of the route: inside the corridor.
+        {"latitude": 0.3, "longitude": 4.8, "id": "along-route"},
+        # ~330 km abeam the middle: outside the 50 km half-width.
+        {"latitude": 3.0, "longitude": 0.0, "id": "off-route"},
+    ]
+    kept = aoi.filter_by_aoi(items, row)
+    assert [i["id"] for i in kept] == ["along-route"]
+
+
+def test_filter_by_aoi_circle_matches_filter_by_radius(store: AOIStore) -> None:
+    """Back-compat: for a circle AOI the shape filter must agree exactly
+    with the original radius filter."""
+    aoi.define_aoi(store, "Pittsburgh", _PGH_LAT, _PGH_LON, _PGH_RADIUS_KM)
+    row = store.get("Pittsburgh")
+    items = [
+        {"latitude": _NEAR_LAT, "longitude": _NEAR_LON, "id": "near"},
+        {"latitude": _FAR_LAT, "longitude": _FAR_LON, "id": "far"},
+    ]
+    via_shape = aoi.filter_by_aoi(items, row)
+    via_radius = aoi.filter_by_radius(items, _PGH_LAT, _PGH_LON, _PGH_RADIUS_KM)
+    assert [i["id"] for i in via_shape] == [i["id"] for i in via_radius]
+    assert via_shape[0]["distance_km"] == via_radius[0]["distance_km"]
+
+
+@pytest.mark.asyncio
+async def test_brief_with_polygon_aoi_scopes_by_shape(
+    fetcher, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _patch_all_domains(monkeypatch)
+
+    async def _eq_in_and_out(fetcher_, **kwargs):
+        return {
+            "earthquakes": [
+                {
+                    "id": "in-poly",
+                    "magnitude": 3.0,
+                    "place": "inside square",
+                    "latitude": 40.4,
+                    "longitude": -80.0,
+                },
+                {
+                    "id": "circle-only",
+                    "magnitude": 4.0,
+                    "place": "circle only",
+                    "latitude": _IN_CIRCLE_NOT_SQUARE[0],
+                    "longitude": _IN_CIRCLE_NOT_SQUARE[1],
+                },
+            ]
+        }
+
+    monkeypatch.setattr(seismology, "fetch_earthquakes", _eq_in_and_out)
+    s = AOIStore(tmp_path / "poly.db")
+    aoi.define_polygon_aoi(s, "PGH Square", _PGH_SQUARE)
+
+    result = await aoi.fetch_aoi_brief(fetcher, s, "PGH Square")
+    assert result["counts"]["earthquakes"] == 1
+    assert "inside square" in result["markdown"]
+    assert "circle only" not in result["markdown"]
+    assert result["aoi"]["kind"] == "polygon"
+    s.close()
+
+
+@pytest.mark.asyncio
+async def test_changes_with_corridor_aoi_baselines_and_diffs(
+    fetcher, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _patch_all_domains(monkeypatch)
+
+    async def _eq_on_route(fetcher_, **kwargs):
+        return {
+            "earthquakes": [
+                {
+                    "id": "route-eq",
+                    "magnitude": 3.0,
+                    "place": "on route",
+                    "latitude": 0.2,
+                    "longitude": 4.8,
+                }
+            ]
+        }
+
+    monkeypatch.setattr(seismology, "fetch_earthquakes", _eq_on_route)
+    s = AOIStore(tmp_path / "corr.db")
+    aoi.define_corridor_aoi(
+        s, "Equator Lane", [[0.0, -5.0], [0.0, 0.0], [0.0, 5.0]], width_km=100.0
+    )
+
+    first = await aoi.fetch_aoi_changes(fetcher, s, "Equator Lane")
+    assert first["baseline"] is True
+    second = await aoi.fetch_aoi_changes(fetcher, s, "Equator Lane")
+    assert second["baseline"] is False
+    assert second["changes"]["earthquakes"]["unchanged"] == 1
+    s.close()
+
+
+def test_update_geometry_rejected_for_non_circle(store: AOIStore) -> None:
+    aoi.define_polygon_aoi(store, "PGH Square", _PGH_SQUARE)
+    result = aoi.update_aoi(store, "PGH Square", radius_km=500.0)
+    assert "error" in result
+    # Renames still work for any shape.
+    renamed = aoi.update_aoi(store, "PGH Square", new_name="Square v2")
+    assert "error" not in renamed
+    assert store.get("Square v2")["kind"] == "polygon"
+
+
+def test_list_aois_reports_kind(store: AOIStore) -> None:
+    aoi.define_aoi(store, "Pittsburgh", _PGH_LAT, _PGH_LON, _PGH_RADIUS_KM)
+    aoi.define_polygon_aoi(store, "PGH Square", _PGH_SQUARE)
+    kinds = {a["name"]: a["kind"] for a in aoi.list_aois(store)["aois"]}
+    assert kinds == {"Pittsburgh": "circle", "PGH Square": "polygon"}
+
+
+def test_store_migrates_pre_shape_schema(tmp_path: Path) -> None:
+    """A database created before the kind/geometry columns existed must
+    open cleanly, with old rows readable as circles."""
+    import sqlite3 as _sq
+
+    db = tmp_path / "old.db"
+    conn = _sq.connect(str(db))
+    conn.execute(
+        "CREATE TABLE aois (name_key TEXT PRIMARY KEY, name TEXT NOT NULL, "
+        "lat REAL NOT NULL, lon REAL NOT NULL, radius_km REAL NOT NULL, "
+        "created_at REAL NOT NULL)"
+    )
+    conn.execute(
+        "INSERT INTO aois VALUES ('pittsburgh', 'Pittsburgh', 40.4406, "
+        "-79.9959, 50.0, 0)"
+    )
+    conn.commit()
+    conn.close()
+
+    s = AOIStore(db)
+    row = s.get("Pittsburgh")
+    assert row["kind"] == "circle"
+    assert row["geometry"] is None
+    assert row["radius_km"] == 50.0
+    # And new shapes write fine into the migrated table.
+    assert "error" not in aoi.define_polygon_aoi(s, "PGH Square", _PGH_SQUARE)
+    s.close()
