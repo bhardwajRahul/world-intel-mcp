@@ -11,6 +11,7 @@ from typing import Any
 
 import click
 from rich.console import Console
+from rich.markup import escape
 from rich.table import Table
 from rich.panel import Panel
 from rich import box
@@ -76,6 +77,25 @@ def _print_json(data: dict) -> None:
     console.print_json(json.dumps(data, default=str))
 
 
+def _bail_on_error(ctx: click.Context, data: dict) -> bool:
+    """True when the command should stop rendering.
+
+    In --json-output mode the raw dict (error included) is printed
+    unchanged. In table mode an upstream {"error": ...} is printed in red
+    so an outage is never shape-identical to a quiet world ("0
+    earthquakes", "No market data available"). Degraded-but-partial
+    payloads carry no top-level "error" key and fall through to normal
+    rendering.
+    """
+    if ctx.obj.get("json"):
+        _print_json(data)
+        return True
+    if "error" in data:
+        console.print(f"[red]Error:[/red] {escape(str(data['error']))}")
+        return True
+    return False
+
+
 # ---------------------------------------------------------------------------
 # Root group
 # ---------------------------------------------------------------------------
@@ -104,8 +124,7 @@ def markets_cmd(ctx: click.Context, symbols: tuple[str, ...]) -> None:
     sym_list = list(symbols) if symbols else None
     data = _run(markets.fetch_market_quotes(f, symbols=sym_list))
 
-    if ctx.obj.get("json"):
-        _print_json(data)
+    if _bail_on_error(ctx, data):
         return
 
     quotes = data.get("quotes", [])
@@ -140,8 +159,7 @@ def crypto(ctx: click.Context, limit: int) -> None:
     f = _get_fetcher()
     data = _run(markets.fetch_crypto_quotes(f, limit=limit))
 
-    if ctx.obj.get("json"):
-        _print_json(data)
+    if _bail_on_error(ctx, data):
         return
 
     coins = data.get("coins", [])
@@ -177,8 +195,7 @@ def macro(ctx: click.Context) -> None:
     f = _get_fetcher()
     data = _run(markets.fetch_macro_signals(f))
 
-    if ctx.obj.get("json"):
-        _print_json(data)
+    if _bail_on_error(ctx, data):
         return
 
     signals = data.get("signals", {})
@@ -365,8 +382,7 @@ def earthquakes(ctx: click.Context, min_mag: float, hours: int) -> None:
     f = _get_fetcher()
     data = _run(seismology.fetch_earthquakes(f, min_magnitude=min_mag, hours=hours))
 
-    if ctx.obj.get("json"):
-        _print_json(data)
+    if _bail_on_error(ctx, data):
         return
 
     quakes = data.get("earthquakes", [])
@@ -482,8 +498,7 @@ def flights(ctx: click.Context, bbox: str | None) -> None:
     f = _get_fetcher()
     data = _run(military.fetch_military_flights(f, bbox=bbox))
 
-    if ctx.obj.get("json"):
-        _print_json(data)
+    if _bail_on_error(ctx, data):
         return
 
     aircraft = data.get("aircraft", [])
@@ -514,8 +529,7 @@ def posture(ctx: click.Context) -> None:
     f = _get_fetcher()
     data = _run(military.fetch_theater_posture(f))
 
-    if ctx.obj.get("json"):
-        _print_json(data)
+    if _bail_on_error(ctx, data):
         return
 
     console.print(
@@ -554,8 +568,7 @@ def outages(ctx: click.Context) -> None:
     f = _get_fetcher()
     data = _run(infrastructure.fetch_internet_outages(f))
 
-    if ctx.obj.get("json"):
-        _print_json(data)
+    if _bail_on_error(ctx, data):
         return
 
     console.print(
@@ -567,7 +580,8 @@ def outages(ctx: click.Context) -> None:
         ongoing = "[red]ONGOING[/red]" if o.get("is_ongoing") else ""
         countries = ", ".join(o.get("countries", [])[:5]) if o.get("countries") else ""
         console.print(
-            f"  {o.get('start', '')[:16]}  {countries}  {o.get('description', '')[:80]}  {ongoing}"
+            f"  {o.get('start', '')[:16]}  {escape(countries)}  "
+            f"{escape(o.get('description', '')[:80])}  {ongoing}"
         )
 
 
@@ -578,8 +592,7 @@ def cables(ctx: click.Context) -> None:
     f = _get_fetcher()
     data = _run(infrastructure.fetch_cable_health(f))
 
-    if ctx.obj.get("json"):
-        _print_json(data)
+    if _bail_on_error(ctx, data):
         return
 
     status_labels = {
@@ -619,8 +632,7 @@ def warnings(ctx: click.Context, navarea: str | None) -> None:
     f = _get_fetcher()
     data = _run(maritime.fetch_nav_warnings(f, navarea=navarea))
 
-    if ctx.obj.get("json"):
-        _print_json(data)
+    if _bail_on_error(ctx, data):
         return
 
     console.print(f"[bold]{data.get('count', 0)} active warnings[/bold]\n")
@@ -633,8 +645,9 @@ def warnings(ctx: click.Context, navarea: str | None) -> None:
         console.print()
 
     for w in data.get("warnings", [])[:20]:
+        area = escape(f"[{w.get('navarea', '?')}]")
         console.print(
-            f"  [{w.get('navarea', '?')}] {w.get('id', '')}  {w.get('text', '')[:100]}"
+            f"  {area} {escape(w.get('id', ''))}  {escape(w.get('text', '')[:100])}"
         )
 
 
@@ -650,12 +663,20 @@ def climate_cmd(ctx: click.Context) -> None:
     f = _get_fetcher()
     data = _run(climate.fetch_climate_anomalies(f))
 
-    if ctx.obj.get("json"):
-        _print_json(data)
+    if _bail_on_error(ctx, data):
         return
 
     zones = data.get("zones", {})
     sig = data.get("significant_anomalies", [])
+
+    # Degraded-but-partial: some zones failed but the rest are usable.
+    # Render the data AND a visible warning naming what is missing.
+    unavailable = data.get("unavailable_zones", [])
+    if unavailable:
+        console.print(
+            f"[yellow]Warning:[/yellow] {len(unavailable)} zones unavailable "
+            f"(Open-Meteo): {escape(', '.join(unavailable))}\n"
+        )
 
     table = Table(title="Climate Anomalies", box=box.SIMPLE_HEAVY)
     table.add_column("Zone", style="bold")
@@ -722,8 +743,7 @@ def news_cmd(ctx: click.Context, category: str | None, limit: int) -> None:
     f = _get_fetcher()
     data = _run(news.fetch_news_feed(f, category=category, limit=limit))
 
-    if ctx.obj.get("json"):
-        _print_json(data)
+    if _bail_on_error(ctx, data):
         return
 
     items = data.get("items", [])
@@ -736,11 +756,15 @@ def news_cmd(ctx: click.Context, category: str | None, limit: int) -> None:
     )
 
     for item in items:
-        cat = item.get("category", "")
-        title = item.get("title", "")
-        feed = item.get("feed_name", "")
+        # Remote values are escaped so the category label renders
+        # literally instead of parsing as a markup tag, and bracketed
+        # sequences inside feed titles can't drop text or raise
+        # MarkupError.
+        cat = escape(f"[{item.get('category', '')}]")
+        title = escape(item.get("title", ""))
+        feed = escape(item.get("feed_name", ""))
         pub = (item.get("published") or "")[:16]
-        console.print(f"  [{cat}] [bold]{title}[/bold]")
+        console.print(f"  {cat} [bold]{title}[/bold]")
         console.print(f"         {feed} — {pub}")
 
 
@@ -752,8 +776,7 @@ def trending(ctx: click.Context, min_count: int) -> None:
     f = _get_fetcher()
     data = _run(news.fetch_trending_keywords(f, min_count=min_count))
 
-    if ctx.obj.get("json"):
-        _print_json(data)
+    if _bail_on_error(ctx, data):
         return
 
     keywords = data.get("keywords", [])
@@ -783,15 +806,14 @@ def gdelt(ctx: click.Context, query: str, mode: str, limit: int) -> None:
     f = _get_fetcher()
     data = _run(news.fetch_gdelt_search(f, query=query, mode=mode, limit=limit))
 
-    if ctx.obj.get("json"):
-        _print_json(data)
+    if _bail_on_error(ctx, data):
         return
 
     if mode == "artlist":
         articles = data.get("articles", [])
         console.print(f"[bold]{len(articles)} articles[/bold] for '{query}'\n")
         for a in articles[:20]:
-            title = a.get("title", "")[:80]
+            title = escape(a.get("title", "")[:80])
             domain = a.get("domain", "")
             console.print(f"  [bold]{title}[/bold]  ({domain})")
     else:
@@ -812,8 +834,7 @@ def predictions(ctx: click.Context, limit: int) -> None:
     f = _get_fetcher()
     data = _run(prediction.fetch_prediction_markets(f, limit=limit))
 
-    if ctx.obj.get("json"):
-        _print_json(data)
+    if _bail_on_error(ctx, data):
         return
 
     mkts = data.get("markets", [])
@@ -856,8 +877,7 @@ def displacement_cmd(ctx: click.Context, year: int | None) -> None:
     f = _get_fetcher()
     data = _run(displacement.fetch_displacement_summary(f, year=year))
 
-    if ctx.obj.get("json"):
-        _print_json(data)
+    if _bail_on_error(ctx, data):
         return
 
     totals = data.get("global_totals", {})
@@ -893,8 +913,7 @@ def delays(ctx: click.Context) -> None:
     f = _get_fetcher()
     data = _run(aviation.fetch_airport_delays(f))
 
-    if ctx.obj.get("json"):
-        _print_json(data)
+    if _bail_on_error(ctx, data):
         return
 
     delayed = data.get("delayed", [])
@@ -939,8 +958,7 @@ def threats(ctx: click.Context, limit: int) -> None:
     f = _get_fetcher()
     data = _run(cyber.fetch_cyber_threats(f, limit=limit))
 
-    if ctx.obj.get("json"):
-        _print_json(data)
+    if _bail_on_error(ctx, data):
         return
 
     by_sev = data.get("by_severity", {})
@@ -994,8 +1012,7 @@ def brief(ctx: click.Context, country_code: str) -> None:
     f = _get_fetcher()
     data = _run(intelligence.fetch_country_brief(f, country_code=country_code))
 
-    if ctx.obj.get("json"):
-        _print_json(data)
+    if _bail_on_error(ctx, data):
         return
 
     llm_tag = (
@@ -1004,7 +1021,9 @@ def brief(ctx: click.Context, country_code: str) -> None:
         else "[yellow]data-only[/yellow]"
     )
     console.print(f"[bold]Intelligence Brief: {country_code}[/bold] ({llm_tag})\n")
-    console.print(data.get("brief", "No brief available."))
+    # LLM-generated free text: escape so bracketed sequences render
+    # instead of parsing as markup.
+    console.print(escape(str(data.get("brief", "No brief available."))))
 
     d = data.get("data", {})
     if d.get("gdp") or d.get("recent_events"):
@@ -1073,7 +1092,7 @@ def dossier(ctx: click.Context, country: str) -> None:
     news = data.get("news", {})
     console.print(f"[blue]News:[/blue] {news.get('mention_count', 0)} recent mentions")
     for art in news.get("mentions", [])[:3]:
-        console.print(f"  - {art.get('title', 'N/A')[:80]}")
+        console.print(f"  - {escape(art.get('title', 'N/A')[:80])}")
 
     # Security
     sec = data.get("security", {})
@@ -1231,8 +1250,7 @@ def central_banks_cmd(ctx: click.Context) -> None:
     f = _get_fetcher()
     data = _run(fetch_central_bank_rates(f))
 
-    if ctx.obj.get("json"):
-        _print_json(data)
+    if _bail_on_error(ctx, data):
         return
 
     fred_tag = (
@@ -1273,8 +1291,7 @@ def shipping_cmd(ctx: click.Context) -> None:
     f = _get_fetcher()
     data = _run(shipping.fetch_shipping_index(f))
 
-    if ctx.obj.get("json"):
-        _print_json(data)
+    if _bail_on_error(ctx, data):
         return
 
     console.print(
@@ -1310,8 +1327,7 @@ def social_cmd(ctx: click.Context) -> None:
     f = _get_fetcher()
     data = _run(social.fetch_social_signals(f))
 
-    if ctx.obj.get("json"):
-        _print_json(data)
+    if _bail_on_error(ctx, data):
         return
 
     metrics = data.get("velocity_metrics", {})
@@ -1323,7 +1339,7 @@ def social_cmd(ctx: click.Context) -> None:
     for post in data.get("top_posts", [])[:15]:
         score = post.get("score", 0)
         style = "bold" if score >= 1000 else ""
-        title = post.get("title", "")[:80]
+        title = escape(post.get("title", "")[:80])
         console.print(
             f"  [{style}]{score:>5}[/{style}]  {title}"
             if style
@@ -1338,8 +1354,7 @@ def disease_cmd(ctx: click.Context) -> None:
     f = _get_fetcher()
     data = _run(health.fetch_disease_outbreaks(f))
 
-    if ctx.obj.get("json"):
-        _print_json(data)
+    if _bail_on_error(ctx, data):
         return
 
     console.print(
@@ -1349,8 +1364,8 @@ def disease_cmd(ctx: click.Context) -> None:
 
     for item in data.get("items", [])[:20]:
         hc = "[red]HC[/red] " if item.get("is_high_concern") else "    "
-        title = item.get("title", "")[:80]
-        feed = item.get("feed_name", "")
+        title = escape(item.get("title", "")[:80])
+        feed = escape(item.get("feed_name", ""))
         console.print(f"  {hc}{title}  [dim]({feed})[/dim]")
 
 
@@ -1362,8 +1377,7 @@ def elections_cmd(ctx: click.Context, country: str | None) -> None:
     f = _get_fetcher()
     data = _run(elections.fetch_election_calendar(f, country=country))
 
-    if ctx.obj.get("json"):
-        _print_json(data)
+    if _bail_on_error(ctx, data):
         return
 
     table = Table(title="Election Calendar", box=box.SIMPLE_HEAVY)
@@ -1400,8 +1414,7 @@ def nuclear_cmd(ctx: click.Context, hours: int) -> None:
     f = _get_fetcher()
     data = _run(nuclear.fetch_nuclear_monitor(f, hours=hours))
 
-    if ctx.obj.get("json"):
-        _print_json(data)
+    if _bail_on_error(ctx, data):
         return
 
     console.print(
@@ -1424,8 +1437,7 @@ def space_cmd(ctx: click.Context) -> None:
     f = _get_fetcher()
     data = _run(space_weather.fetch_space_weather(f))
 
-    if ctx.obj.get("json"):
-        _print_json(data)
+    if _bail_on_error(ctx, data):
         return
 
     table = Table(title="Space Weather", box=box.SIMPLE_HEAVY)
@@ -1454,8 +1466,7 @@ def sanctions_cmd(ctx: click.Context, query: str, country: str | None) -> None:
     f = _get_fetcher()
     data = _run(sanctions.fetch_sanctions_search(f, query=query, country=country))
 
-    if ctx.obj.get("json"):
-        _print_json(data)
+    if _bail_on_error(ctx, data):
         return
 
     console.print(
@@ -1464,10 +1475,10 @@ def sanctions_cmd(ctx: click.Context, query: str, country: str | None) -> None:
     )
 
     for m in data.get("matches", [])[:20]:
-        etype = m.get("entity_type", "")
-        name = m.get("name", "")
-        programs = ", ".join(m.get("programs", [])[:3])
-        console.print(f"  [{etype}] [bold]{name}[/bold]  ({programs})")
+        etype = escape(f"[{m.get('entity_type', '')}]")
+        name = escape(m.get("name", ""))
+        programs = escape(", ".join(m.get("programs", [])[:3]))
+        console.print(f"  {etype} [bold]{name}[/bold]  ({programs})")
 
 
 @main.command(name="ai-watch")
@@ -1477,15 +1488,14 @@ def ai_watch_cmd(ctx: click.Context) -> None:
     f = _get_fetcher()
     data = _run(ai_watch.fetch_ai_watch(f))
 
-    if ctx.obj.get("json"):
-        _print_json(data)
+    if _bail_on_error(ctx, data):
         return
 
     console.print(f"[bold]AI Watch[/bold] — {data.get('total_items', 0)} items\n")
     for item in data.get("items", [])[:20]:
-        title = item.get("title", "")[:80]
-        src = item.get("source", "")
-        console.print(f"  [{src}] {title}")
+        title = escape(item.get("title", "")[:80])
+        src = escape(f"[{item.get('source', '')}]")
+        console.print(f"  {src} {title}")
 
 
 # ---------------------------------------------------------------------------
@@ -1504,7 +1514,7 @@ def fleet_cmd(ctx: click.Context) -> None:
         _print_json(data)
         return
 
-    console.print(f"[bold]{data.get('report_title', 'Fleet Report')}[/bold]\n")
+    console.print(f"[bold]{escape(data.get('report_title', 'Fleet Report'))}[/bold]\n")
 
     totals = data.get("force_totals", {})
     if totals.get("battle_force"):
@@ -1549,13 +1559,12 @@ def hn_cmd(ctx: click.Context, limit: int) -> None:
     f = _get_fetcher()
     data = _run(fetch_hacker_news(f, limit=limit))
 
-    if ctx.obj.get("json"):
-        _print_json(data)
+    if _bail_on_error(ctx, data):
         return
 
     for s in data.get("stories", []):
         score = s.get("score", 0)
-        title = s.get("title", "")[:80]
+        title = escape(s.get("title", "")[:80])
         console.print(f"  {score:>5}  {title}")
 
 
@@ -1567,16 +1576,15 @@ def gh_trending_cmd(ctx: click.Context, limit: int) -> None:
     f = _get_fetcher()
     data = _run(fetch_trending_repos(f, limit=limit))
 
-    if ctx.obj.get("json"):
-        _print_json(data)
+    if _bail_on_error(ctx, data):
         return
 
     for r in data.get("repos", []):
         stars = r.get("stars", 0)
-        name = r.get("name", "")
-        lang = r.get("language") or ""
-        desc = (r.get("description") or "")[:60]
-        console.print(f"  {stars:>6} [bold]{name}[/bold] [{lang}]  {desc}")
+        name = escape(r.get("name", ""))
+        lang = escape(f"[{r.get('language') or ''}]")
+        desc = escape((r.get("description") or "")[:60])
+        console.print(f"  {stars:>6} [bold]{name}[/bold] {lang}  {desc}")
 
 
 @main.command(name="arxiv")
@@ -1588,13 +1596,12 @@ def arxiv_cmd(ctx: click.Context, query: str, limit: int) -> None:
     f = _get_fetcher()
     data = _run(fetch_arxiv_papers(f, query=query, limit=limit))
 
-    if ctx.obj.get("json"):
-        _print_json(data)
+    if _bail_on_error(ctx, data):
         return
 
     for p in data.get("papers", []):
-        title = p.get("title", "")[:80]
-        authors = ", ".join(p.get("authors", [])[:3])
+        title = escape(p.get("title", "")[:80])
+        authors = escape(", ".join(p.get("authors", [])[:3]))
         console.print(f"  [bold]{title}[/bold]")
         console.print(f"    {authors}")
 
@@ -1607,8 +1614,7 @@ def spending_cmd(ctx: click.Context, limit: int) -> None:
     f = _get_fetcher()
     data = _run(fetch_usa_spending(f, limit=limit))
 
-    if ctx.obj.get("json"):
-        _print_json(data)
+    if _bail_on_error(ctx, data):
         return
 
     table = Table(title="Federal Agencies by Budget", box=box.SIMPLE_HEAVY)
@@ -1638,8 +1644,7 @@ def bases_cmd(ctx: click.Context, operator: str | None, country: str | None) -> 
     """Military bases worldwide (70 bases)."""
     data = _run(geospatial.fetch_military_bases(operator=operator, country=country))
 
-    if ctx.obj.get("json"):
-        _print_json(data)
+    if _bail_on_error(ctx, data):
         return
 
     console.print(
@@ -1673,8 +1678,7 @@ def exchanges_cmd(ctx: click.Context, tier: str | None, country: str | None) -> 
     """Global stock exchanges (82 exchanges)."""
     data = _run(geospatial.fetch_stock_exchanges(tier=tier, country=country))
 
-    if ctx.obj.get("json"):
-        _print_json(data)
+    if _bail_on_error(ctx, data):
         return
 
     console.print(
@@ -1959,9 +1963,12 @@ def report(
         )
 
     if "error" in result:
-        console.print(f"[red]Error:[/red] {result['error']}")
+        console.print(f"[red]Error:[/red] {escape(str(result['error']))}")
         if "fallback" in result:
-            console.print(f"[yellow]{result['fallback']}[/yellow]")
+            # escape keeps the literal "[pdf]" in the install hint from
+            # being eaten as a markup tag — the printed command must be
+            # runnable verbatim.
+            console.print(f"[yellow]{escape(str(result['fallback']))}[/yellow]")
         return
 
     console.print(

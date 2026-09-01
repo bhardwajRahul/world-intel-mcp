@@ -5,27 +5,26 @@ test_world_brief.py pattern), so no network happens; assertions check that
 rendered Rich output contains values derived from the fakes and that CLI
 options reach the fetch functions with the right names.
 
-Three cli.py bugs are pinned (not fixed) by characterization tests below,
-marked BUG in comments:
+Two former cli.py bug classes are now covered by honest-contract tests
+(they were pinned here as characterization tests until fixed):
 
-1. Error swallowing: many commands only branch on ``ctx.obj["json"]`` and
-   never check ``"error" in data``, so an upstream {"error": ...} renders
-   as a healthy-looking empty table ("0 earthquakes", "No market data
-   available") with the actual error message discarded. Commands that DO
-   surface errors (energy, fred, fires, conflicts, dossier, btc, fleet,
-   traffic, ...) print the JSON error. See the *_error_dict tests.
+1. Error surfacing: every data command bails via ``cli._bail_on_error``,
+   so an upstream {"error": ...} prints the error text in red instead of
+   rendering as a healthy-looking empty table ("0 earthquakes", "No
+   market data available"). In --json-output mode the raw dict (error
+   included) is printed unchanged. An outage must never be
+   shape-identical to a quiet world. See the *_error_dict tests and the
+   parametrized test_error_dict_reaches_table_output sweep.
 
-2. Rich markup swallowing: several commands interpolate data into
-   ``[...]`` brackets (news category, sanctions entity_type, ai-watch
-   source), and the report command's own remediation hint contains a
-   literal ``[pdf]``. Lowercase bracketed values parse as Rich markup
-   tags and are silently dropped from output — the label the line exists
-   to show never renders, and the install hint prints as
-   ``pip install -e '.'``. (Uppercase values like "[IV]" or "[Rust]" fail
-   Rich's tag regex and survive as literal text.) This is also a
-   markup-injection surface: bracketed sequences inside remote data
-   (news titles, etc.) are interpreted as markup. See the
-   *_markup_swallowed tests and test_report_error_with_fallback_hint.
+2. Rich markup escaping: values interpolated into ``[...]`` label
+   constructs (news category, sanctions entity_type, ai-watch source,
+   gh-trending language) and remote free text (titles, descriptions,
+   feed names, the report command's literal ``[pdf]`` install hint) are
+   escaped with rich.markup.escape, so lowercase bracketed labels render
+   literally instead of parsing as markup tags, and bracketed sequences
+   inside remote data neither vanish nor raise MarkupError. See the
+   *_label_renders tests, test_report_error_with_fallback_hint, and
+   test_news_bracketed_remote_title_survives.
 """
 
 import pytest
@@ -176,17 +175,31 @@ def test_markets_json_flag_prints_raw_json(monkeypatch: pytest.MonkeyPatch) -> N
     assert '"change_pct"' in result.output
 
 
-def test_markets_error_dict_swallowed(monkeypatch: pytest.MonkeyPatch) -> None:
-    # BUG: markets never checks "error" in data. An upstream failure
-    # renders as the healthy-looking empty state and the error text is
-    # discarded. Pinned, not fixed (fix belongs in cli.py).
+def test_markets_error_dict_is_surfaced(monkeypatch: pytest.MonkeyPatch) -> None:
+    # An upstream failure must print the error text, not the
+    # healthy-looking empty state.
     monkeypatch.setattr(
         cli.markets, "fetch_market_quotes", _fake({"error": "yahoo down"})
     )
     result = _invoke("markets")
     assert result.exit_code == 0
-    assert "No market data available" in result.output
-    assert "yahoo down" not in result.output
+    assert "yahoo down" in result.output
+    assert "No market data available" not in result.output
+
+
+def test_markets_error_dict_json_mode_passes_raw_dict(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # --json-output stays machine-honest: the raw dict, error included,
+    # with no separate error rendering.
+    monkeypatch.setattr(
+        cli.markets, "fetch_market_quotes", _fake({"error": "yahoo down"})
+    )
+    result = _invoke("--json-output", "markets")
+    assert result.exit_code == 0
+    assert '"error"' in result.output
+    assert '"yahoo down"' in result.output
+    assert "Error:" not in result.output
 
 
 def test_crypto_renders_and_passes_limit(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -442,17 +455,16 @@ def test_earthquakes_passes_options_and_renders_rows(
     assert "Nevada" in result.output
 
 
-def test_earthquakes_error_dict_swallowed(monkeypatch: pytest.MonkeyPatch) -> None:
-    # BUG: earthquakes never checks "error" in data. A USGS failure renders
-    # as "0 earthquakes" over an empty table — indistinguishable from a
-    # genuinely quiet day. Pinned, not fixed.
+def test_earthquakes_error_dict_is_surfaced(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A USGS failure must print the error text — never "0 earthquakes"
+    # over an empty table, indistinguishable from a genuinely quiet day.
     monkeypatch.setattr(
         cli.seismology, "fetch_earthquakes", _fake({"error": "USGS unreachable"})
     )
     result = _invoke("earthquakes")
     assert result.exit_code == 0
-    assert "0 earthquakes" in result.output
-    assert "USGS unreachable" not in result.output
+    assert "USGS unreachable" in result.output
+    assert "0 earthquakes" not in result.output
 
 
 def test_fires_renders_regions_and_skips_zero_counts(
@@ -518,6 +530,32 @@ def test_climate_renders_anomalies_and_sig_flag(
     assert "SIG" in result.output
     assert "Sahel" in result.output
     assert "+0.5C" in result.output
+
+
+def test_climate_degraded_partial_renders_data_and_warning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Partial degradation (some zones failed, no top-level "error") must
+    # render the usable zones AND a visible warning naming the failed
+    # ones — not bail, and not silently show a shrunken table.
+    payload = {
+        "zones": {
+            "arctic": {
+                "name": "Arctic",
+                "temp_anomaly_c": 4.2,
+                "precip_anomaly_pct": -10.0,
+            },
+        },
+        "significant_anomalies": [],
+        "unavailable_zones": ["sahel", "amazon"],
+        "degraded": True,
+    }
+    monkeypatch.setattr(cli.climate, "fetch_climate_anomalies", _fake(payload))
+    result = _invoke("climate")
+    assert result.exit_code == 0
+    assert "Arctic" in result.output
+    assert "Warning" in result.output
+    assert "sahel, amazon" in result.output
 
 
 # ---------------------------------------------------------------------------
@@ -705,7 +743,7 @@ def test_warnings_passes_navarea_and_renders_groups(
 # ---------------------------------------------------------------------------
 
 
-def test_news_passes_options_and_category_label_markup_swallowed(
+def test_news_passes_options_and_category_label_renders(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list = []
@@ -729,10 +767,36 @@ def test_news_passes_options_and_category_label_markup_swallowed(
     assert "Summit convened on maritime security" in result.output
     assert "BBC World" in result.output
     assert "2026-08-31T10:00" in result.output
-    # BUG: the per-item category label is printed as "[geopolitics]", which
-    # Rich parses as an (unknown, lowercase) markup tag and silently drops —
-    # the item's category never reaches the user. Pinned, not fixed.
-    assert "geopolitics" not in result.output
+    # The per-item category label must render literally; before the
+    # escape fix Rich parsed "[geopolitics]" as an unknown lowercase
+    # markup tag and silently dropped it.
+    assert "[geopolitics]" in result.output
+
+
+def test_news_bracketed_remote_title_survives(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Remote data is a markup-injection surface: "[/]" inside a feed
+    # title is a Rich closing tag that used to unbalance the [bold]
+    # wrapper and raise MarkupError, crashing the command. Escaped, the
+    # title must render verbatim and the command must exit 0.
+    payload = {
+        "count": 1,
+        "categories_fetched": ["security"],
+        "items": [
+            {
+                "category": "security",
+                "title": "Ceasefire [/] holds in region",
+                "feed_name": "Feed [with] brackets",
+                "published": "2026-08-31T10:00:00Z",
+            }
+        ],
+    }
+    monkeypatch.setattr(cli.news, "fetch_news_feed", _fake(payload))
+    result = _invoke("news")
+    assert result.exit_code == 0
+    assert "Ceasefire [/] holds in region" in result.output
+    assert "Feed [with] brackets" in result.output
 
 
 def test_news_rejects_invalid_category() -> None:
@@ -845,6 +909,28 @@ def test_displacement_passes_year_and_renders_totals(
     assert "120,000,000" in result.output
     assert "Syria" in result.output
     assert "13,000,000" in result.output
+
+
+def test_displacement_outage_shape_bails_not_zero_totals(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # UNHCR's honest outage shape carries "error" alongside a zeroed
+    # structure. The CLI must surface the error, never render
+    # "Grand total: 0" as if there were zero displaced persons worldwide.
+    payload = {
+        "error": "UNHCR API unavailable (no live or cached data)",
+        "degraded": True,
+        "reason": "unhcr_fetch_failed",
+        "by_origin": [],
+        "global_totals": {"grand_total": 0},
+        "year": 2025,
+        "count": 0,
+    }
+    monkeypatch.setattr(cli.displacement, "fetch_displacement_summary", _fake(payload))
+    result = _invoke("displacement")
+    assert result.exit_code == 0
+    assert "UNHCR API unavailable" in result.output
+    assert "Grand total: 0" not in result.output
 
 
 def test_delays_all_clear_message(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1159,7 +1245,7 @@ def test_space_renders_metrics_and_skips_missing(
     assert "Bz" not in result.output  # None metrics are omitted
 
 
-def test_sanctions_passes_query_and_entity_type_markup_swallowed(
+def test_sanctions_passes_query_and_entity_type_label_renders(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list = []
@@ -1183,12 +1269,12 @@ def test_sanctions_passes_query_and_entity_type_markup_swallowed(
     assert "12000 total" in result.output
     assert "WAGNER GROUP" in result.output
     assert "RUSSIA-EO14024" in result.output
-    # BUG: "[org]" is parsed as Rich markup and silently dropped — the
-    # entity type never renders. Pinned, not fixed.
-    assert "org" not in result.output
+    # The entity-type label must render literally; before the escape fix
+    # Rich parsed "[org]" as a markup tag and silently dropped it.
+    assert "[org]" in result.output
 
 
-def test_ai_watch_source_label_markup_swallowed(
+def test_ai_watch_source_label_renders(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     payload = {
@@ -1200,9 +1286,9 @@ def test_ai_watch_source_label_markup_swallowed(
     assert result.exit_code == 0
     assert "2 items" in result.output
     assert "New frontier model released" in result.output
-    # BUG: "[arxiv]" is parsed as Rich markup and silently dropped — the
-    # per-item source label never renders. Pinned, not fixed.
-    assert "arxiv" not in result.output
+    # The per-item source label must render literally; before the escape
+    # fix Rich parsed "[arxiv]" as a markup tag and silently dropped it.
+    assert "[arxiv]" in result.output
 
 
 # ---------------------------------------------------------------------------
@@ -1273,11 +1359,30 @@ def test_gh_trending_renders_repos(monkeypatch: pytest.MonkeyPatch) -> None:
     assert result.exit_code == 0
     assert "3200" in result.output
     assert "acme/widget" in result.output
-    # "[Rust]" survives only because it starts uppercase and so fails
-    # Rich's markup-tag regex; a lowercase language would be swallowed
-    # like the news category (see BUG note in module docstring).
+    # The language label is escaped, so it renders literally regardless
+    # of case (an unescaped lowercase language used to be swallowed as a
+    # markup tag; "[Rust]" only survived by failing Rich's tag regex).
     assert "[Rust]" in result.output
     assert "A widget framework" in result.output
+
+
+def test_gh_trending_lowercase_language_label_renders(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = {
+        "repos": [
+            {
+                "stars": 900,
+                "name": "acme/gadget",
+                "language": "zig",
+                "description": "A gadget toolkit",
+            }
+        ]
+    }
+    monkeypatch.setattr(cli, "fetch_trending_repos", _fake(payload))
+    result = _invoke("gh-trending")
+    assert result.exit_code == 0
+    assert "[zig]" in result.output
 
 
 def test_arxiv_passes_query_and_renders_papers(
@@ -1586,9 +1691,68 @@ def test_report_error_with_fallback_hint(monkeypatch: pytest.MonkeyPatch) -> Non
     assert result.exit_code == 0
     assert "Error:" in result.output
     assert "WeasyPrint not installed" in result.output
-    # BUG: the fallback hint's literal "[pdf]" is parsed as a Rich markup
-    # tag and silently dropped, so the user is told to run
-    # `pip install -e '.'` — which would NOT install the pdf extra.
-    # Pinned, not fixed.
-    assert "pip install -e '.'" in result.output
-    assert "[pdf]" not in result.output
+    # The fallback hint must print the runnable command verbatim; before
+    # the escape fix Rich ate the literal "[pdf]" as a markup tag and the
+    # printed command would NOT have installed the pdf extra.
+    assert "pip install -e '.[pdf]'" in result.output
+
+
+# ---------------------------------------------------------------------------
+# Error-surfacing sweep: every data command converted to _bail_on_error
+# ---------------------------------------------------------------------------
+
+# (cli args, module holding the fetch fn, fetch fn attribute name). One row
+# per command that used to branch only on ctx.obj["json"] and rendered an
+# upstream {"error": ...} as a healthy empty state.
+_ERROR_SWEEP = [
+    (("markets",), cli.markets, "fetch_market_quotes"),
+    (("crypto",), cli.markets, "fetch_crypto_quotes"),
+    (("macro",), cli.markets, "fetch_macro_signals"),
+    (("earthquakes",), cli.seismology, "fetch_earthquakes"),
+    (("flights",), cli.military, "fetch_military_flights"),
+    (("posture",), cli.military, "fetch_theater_posture"),
+    (("outages",), cli.infrastructure, "fetch_internet_outages"),
+    (("cables",), cli.infrastructure, "fetch_cable_health"),
+    (("warnings",), cli.maritime, "fetch_nav_warnings"),
+    (("climate",), cli.climate, "fetch_climate_anomalies"),
+    (("news",), cli.news, "fetch_news_feed"),
+    (("trending",), cli.news, "fetch_trending_keywords"),
+    (("gdelt",), cli.news, "fetch_gdelt_search"),
+    (("predictions",), cli.prediction, "fetch_prediction_markets"),
+    (("displacement",), cli.displacement, "fetch_displacement_summary"),
+    (("delays",), cli.aviation, "fetch_airport_delays"),
+    (("threats",), cli.cyber, "fetch_cyber_threats"),
+    (("brief",), cli.intelligence, "fetch_country_brief"),
+    (("central-banks",), cli, "fetch_central_bank_rates"),
+    (("shipping",), cli.shipping, "fetch_shipping_index"),
+    (("social",), cli.social, "fetch_social_signals"),
+    (("disease",), cli.health, "fetch_disease_outbreaks"),
+    (("elections",), cli.elections, "fetch_election_calendar"),
+    (("nuclear",), cli.nuclear, "fetch_nuclear_monitor"),
+    (("space",), cli.space_weather, "fetch_space_weather"),
+    (("sanctions", "Wagner"), cli.sanctions, "fetch_sanctions_search"),
+    (("ai-watch",), cli.ai_watch, "fetch_ai_watch"),
+    (("hn",), cli, "fetch_hacker_news"),
+    (("gh-trending",), cli, "fetch_trending_repos"),
+    (("arxiv",), cli, "fetch_arxiv_papers"),
+    (("spending",), cli, "fetch_usa_spending"),
+    (("bases",), cli.geospatial, "fetch_military_bases"),
+    (("exchanges",), cli.geospatial, "fetch_stock_exchanges"),
+]
+
+
+@pytest.mark.parametrize(
+    ("args", "module", "attr"),
+    _ERROR_SWEEP,
+    ids=[" ".join(row[0]) for row in _ERROR_SWEEP],
+)
+def test_error_dict_reaches_table_output(
+    args: tuple[str, ...],
+    module: object,
+    attr: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(module, attr, _fake({"error": "upstream exploded"}))
+    result = _invoke(*args)
+    assert result.exit_code == 0
+    assert "upstream exploded" in result.output
