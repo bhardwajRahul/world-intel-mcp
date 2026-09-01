@@ -52,9 +52,12 @@ SOURCES = [
     ("residential_natgas", "sources.economic", "fetch_residential_natgas_prices", {}),
     ("electricity_rates", "sources.economic", "fetch_electricity_rates", {}),
     ("central_bank_rates", "sources.central_banks", "fetch_central_bank_rates", {}),
-    # Natural Disasters (2)
+    # Natural Disasters & Hazards (5)
     ("earthquakes", "sources.seismology", "fetch_earthquakes", {}),
     ("wildfires", "sources.wildfire", "fetch_wildfires", {}),
+    ("weather_alerts", "sources.weather", "fetch_weather_alerts", {}),
+    ("volcano_activity", "sources.volcano", "fetch_volcano_activity", {}),
+    ("cyclones", "sources.cyclones", "fetch_cyclones", {}),
     # Conflict & Security (4)
     ("acled_events", "sources.conflict", "fetch_acled_events", {}),
     ("ucdp_events", "sources.conflict", "fetch_ucdp_events", {}),
@@ -79,8 +82,9 @@ SOURCES = [
     ("domestic_flights", "sources.aviation", "fetch_domestic_flights", {}),
     # Cyber (1)
     ("cyber_threats", "sources.cyber", "fetch_cyber_threats", {}),
-    # Space Weather (1)
+    # Space (2)
     ("space_weather", "sources.space_weather", "fetch_space_weather", {}),
+    ("launch_schedule", "sources.launches", "fetch_launch_schedule", {}),
     # AI/Tech (1)
     ("ai_watch", "sources.ai_watch", "fetch_ai_watch", {}),
     # Health (1)
@@ -125,7 +129,13 @@ DOMAIN_GROUPS = {
         "electricity_rates",
         "central_bank_rates",
     ],
-    "natural": ["earthquakes", "wildfires"],
+    "natural": [
+        "earthquakes",
+        "wildfires",
+        "weather_alerts",
+        "volcano_activity",
+        "cyclones",
+    ],
     "conflict": ["acled_events", "ucdp_events", "displacement"],
     "military": ["military_flights"],
     "infrastructure": ["internet_outages", "cable_health", "service_status"],
@@ -135,7 +145,7 @@ DOMAIN_GROUPS = {
     "prediction": ["prediction_markets"],
     "aviation": ["airport_delays", "domestic_flights"],
     "cyber": ["cyber_threats"],
-    "space": ["space_weather"],
+    "space": ["space_weather", "launch_schedule"],
     "ai": ["ai_watch"],
     "health": ["disease_outbreaks"],
     "elections": ["election_calendar"],
