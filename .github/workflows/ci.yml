@@ -23,8 +23,12 @@ jobs:
       - name: Install dependencies
         run: pip install -e ".[dev]"
 
+      # Coverage ratchet (ROADMAP Phase 24): measured 81% on 2026-09-01;
+      # floor set one point under to absorb platform variance between the
+      # macOS dev box and these runners. Raise the floor as waves land —
+      # never lower it to make a change pass.
       - name: Run tests
-        run: pytest -m "not smoke" --cov=world_intel_mcp
+        run: pytest -m "not smoke" --cov=world_intel_mcp --cov-fail-under=80
 
   compile-check:
     runs-on: ubuntu-latest

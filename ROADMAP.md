@@ -548,25 +548,25 @@ coverage overall; `server.py`, `cli.py`, `collector.py` at 0%;
 | Import-based `server.py` registry tests | The TOOLS/`_dispatch` parity invariant was checked by reading server.py as *text*; now imported under a temp cache path and verified structurally, including a real dispatch round-trip | :white_check_mark: Shipped 2026-09-01 (server.py 0% -> 47%) |
 | `collector.py` source-map test | 46 dynamic-import references that nothing verified resolve; the map (names, async-ness, kwargs) is now tested. The collect/daemon run loop is still unexecuted (20% module coverage) | :yellow_circle: |
 | `cli.py` smoke tests (CliRunner) | 1,076 statements, zero executed by tests | :red_circle: |
-| CI coverage gate with ratchet | `--cov-fail-under` at the then-current number (81% measured 2026-09-01), raised as waves land; prevents regression to aspirational-only counts | :red_circle: |
+| CI coverage gate with ratchet | `--cov-fail-under=80` live in ci.yml (81% measured 2026-09-01; floor one point under for platform variance). Raise as waves land; never lower | :white_check_mark: Shipped 2026-09-01 |
 
-### Phase 24.5 (planned): Data-Honesty Backlog
-Verified bugs found by the 2026-09-01 test waves, documented in test
-comments but deliberately not fixed in that change (each alters
-observable behavior and deserves its own reviewed fix). The two
-cross-module silent-zero key mismatches found at the same time
-(`world_brief` `article_count` vs `size`, `fleet` `warning_count` vs
-`naval_warnings`) WERE fixed in 0.4.0 with regression tests.
+### Phase 24.5: Data-Honesty Backlog (top three fixed 2026-09-01)
+Verified bugs found by the 2026-09-01 test waves. The two cross-module
+silent-zero key mismatches found at the same time (`world_brief`
+`article_count` vs `size`, `fleet` `warning_count` vs
+`naval_warnings`) were fixed in 0.4.0 with regression tests; the three
+fail-quietly bugs below were fixed in the same-day follow-up
+(issues #22-#24, each with a flipped regression test).
 
-| Bug | Where | Class |
-|-----|-------|-------|
-| UNHCR outage returns all-zero global totals with no error/degraded key ("zero refugees worldwide") | `sources/displacement.py` | fail-reads-as-success |
-| A climate zone whose fetch fails is silently omitted; full outage yields `{"zones": {}}` with no marker | `sources/climate.py` | silent degradation |
-| "Resolved: Major outage" classifies as an active critical incident (severity keyword ordering); a dead provider feed still lists as checked | `sources/service_status.py` | misclassification |
-| Naval warnings apply to all 9 waterways identically (no proximity/NAVAREA filter); `total_nearby` computed but never emitted | `sources/intelligence.py` vessel snapshot | precision |
-| Country/company entity matching is substring-based without word boundaries ("usa" matches inside "thousand"); organizations already have the guard | `analysis/entities.py` | false positives |
-| Category keywords match substrings ("launched" always triggers space; "airstrike" bumps severity via "strike") | `analysis/classifier.py` | false positives |
-| Silent-empty degradation without a marker on RSS/API failure | `sources/prediction.py` (documented as intended), `sources/maritime.py`, `sources/news.py` RSS path, `sources/fleet.py` `_safe` wrapper | silent degradation |
+| Bug | Where | Class | Status |
+|-----|-------|-------|--------|
+| UNHCR outage returned all-zero global totals with no error/degraded key ("zero refugees worldwide") | `sources/displacement.py` | fail-reads-as-success | :white_check_mark: Fixed (#22) |
+| A climate zone whose fetch failed was silently omitted; full outage yielded `{"zones": {}}` with no marker | `sources/climate.py` | silent degradation | :white_check_mark: Fixed (#23) |
+| "Resolved: Major outage" classified as an active critical incident; a dead provider feed still listed as checked | `sources/service_status.py` | misclassification | :white_check_mark: Fixed (#24) |
+| Naval warnings apply to all 9 waterways identically (no proximity/NAVAREA filter); `total_nearby` computed but never emitted | `sources/intelligence.py` vessel snapshot | precision | :red_circle: |
+| Country/company entity matching is substring-based without word boundaries ("usa" matches inside "thousand"); organizations already have the guard | `analysis/entities.py` | false positives | :red_circle: |
+| Category keywords match substrings ("launched" always triggers space; "airstrike" bumps severity via "strike") | `analysis/classifier.py` | false positives | :red_circle: |
+| Silent-empty degradation without a marker on RSS/API failure | `sources/prediction.py` (documented as intended), `sources/maritime.py`, `sources/news.py` RSS path, `sources/fleet.py` `_safe` wrapper | silent degradation | :red_circle: |
 
 ### Phase 25 (planned): Missing Domains
 Verified absent from `sources/` on 2026-09-01 (grep, not memory):
