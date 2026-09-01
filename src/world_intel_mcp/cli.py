@@ -3,6 +3,19 @@
 intel — CLI for World Intelligence MCP.
 
 Calls source functions directly (no MCP protocol overhead).
+
+Two rendering conventions keep the output honest:
+
+- Every data command routes upstream failures through _bail_on_error:
+  one red "Error:" line in table mode, the raw dict in --json-output
+  mode. An outage never renders as a healthy empty table or a raw JSON
+  dump at a table-mode user.
+- Remote free text (names, titles, places, descriptions) is
+  injection-safe: table cells go through _cell (rich.text.Text renders
+  literally), console lines through rich.markup.escape, and values
+  deliberately styled with markup escape only the interpolated part.
+  Config/enum-derived scalars (region keys, static dataset fields) and
+  numerically formatted values stay as-is.
 """
 
 import asyncio
@@ -13,6 +26,7 @@ import click
 from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
+from rich.text import Text
 from rich.panel import Panel
 from rich import box
 
@@ -96,6 +110,19 @@ def _bail_on_error(ctx: click.Context, data: dict) -> bool:
     return False
 
 
+def _cell(value: Any) -> Text:
+    """Table cell for remote data: renders literally, never as markup.
+
+    A bracketed sequence in an upstream value ("Coast of [/] Chile",
+    "[red]fake[/red]") must neither vanish into Rich's markup parser nor
+    raise MarkupError. Column-level style/justify still apply to Text
+    cells; only content-embedded markup is neutralized. Cells that
+    deliberately wrap a remote value in markup keep the markup and
+    escape() the interpolated value instead.
+    """
+    return Text(str(value))
+
+
 # ---------------------------------------------------------------------------
 # Root group
 # ---------------------------------------------------------------------------
@@ -143,10 +170,10 @@ def markets_cmd(ctx: click.Context, symbols: tuple[str, ...]) -> None:
         price = q.get("price") or 0
         style = "green" if chg >= 0 else "red"
         table.add_row(
-            q.get("symbol", "?"),
+            _cell(q.get("symbol", "?")),
             f"{price:,.2f}",
             f"[{style}]{chg:+.2f}%[/{style}]",
-            q.get("currency", ""),
+            _cell(q.get("currency", "")),
         )
     console.print(table)
 
@@ -180,7 +207,7 @@ def crypto(ctx: click.Context, limit: int) -> None:
         mcap = c.get("market_cap", 0) or 0
         table.add_row(
             str(i),
-            c.get("symbol", "?").upper(),
+            _cell(c.get("symbol", "?").upper()),
             f"${c.get('current_price', 0):,.2f}",
             f"[{style}]{chg:+.2f}%[/{style}]",
             f"${mcap:,.0f}",
@@ -206,13 +233,13 @@ def macro(ctx: click.Context) -> None:
 
     for name, info in signals.items():
         if info is None:
-            table.add_row(name, "[dim]unavailable[/dim]", "")
+            table.add_row(_cell(name), "[dim]unavailable[/dim]", "")
         elif isinstance(info, dict):
             val = info.get("value", info.get("price", "?"))
             detail = info.get("classification", info.get("label", ""))
-            table.add_row(name, str(val), str(detail))
+            table.add_row(_cell(name), _cell(val), _cell(detail))
         else:
-            table.add_row(name, str(info), "")
+            table.add_row(_cell(name), _cell(info), "")
     console.print(table)
 
 
@@ -228,8 +255,7 @@ def energy(ctx: click.Context) -> None:
     f = _get_fetcher()
     data = _run(economic.fetch_energy_prices(f))
 
-    if ctx.obj.get("json") or "error" in data:
-        _print_json(data)
+    if _bail_on_error(ctx, data):
         return
 
     oil = data.get("oil", {})
@@ -245,7 +271,9 @@ def energy(ctx: click.Context) -> None:
         ("Natural Gas", gas),
     ]:
         if info and isinstance(info, dict):
-            table.add_row(name, f"${info.get('price', '?')}", str(info.get("date", "")))
+            table.add_row(
+                name, _cell(f"${info.get('price', '?')}"), _cell(info.get("date", ""))
+            )
     console.print(table)
 
 
@@ -256,8 +284,7 @@ def gas_prices(ctx: click.Context) -> None:
     f = _get_fetcher()
     data = _run(economic.fetch_gas_prices(f))
 
-    if ctx.obj.get("json") or "error" in data:
-        _print_json(data)
+    if _bail_on_error(ctx, data):
         return
 
     prices = data.get("prices", {})
@@ -300,8 +327,7 @@ def natgas(ctx: click.Context) -> None:
     f = _get_fetcher()
     data = _run(economic.fetch_residential_natgas_prices(f))
 
-    if ctx.obj.get("json") or "error" in data:
-        _print_json(data)
+    if _bail_on_error(ctx, data):
         return
 
     prices = data.get("prices", [])
@@ -310,7 +336,7 @@ def natgas(ctx: click.Context) -> None:
     table.add_column("$/MCF", justify="right")
 
     for entry in prices:
-        table.add_row(str(entry.get("period", "")), f"${entry.get('price', '?'):.2f}")
+        table.add_row(_cell(entry.get("period", "")), f"${entry.get('price', '?'):.2f}")
     console.print(table)
 
 
@@ -322,13 +348,14 @@ def electricity(ctx: click.Context, state: str | None) -> None:
     f = _get_fetcher()
     data = _run(economic.fetch_electricity_rates(f, state=state))
 
-    if ctx.obj.get("json") or "error" in data:
-        _print_json(data)
+    if _bail_on_error(ctx, data):
         return
 
     rates = data.get("rates", {})
     label = data.get("state", "US")
-    table = Table(title=f"Electricity Rates — {label}", box=box.SIMPLE_HEAVY)
+    table = Table(
+        title=f"Electricity Rates — {escape(str(label))}", box=box.SIMPLE_HEAVY
+    )
     table.add_column("Sector", style="bold")
     table.add_column("cents/kWh", justify="right")
     table.add_column("Period")
@@ -339,7 +366,7 @@ def electricity(ctx: click.Context, state: str | None) -> None:
             table.add_row(
                 sector.replace("_", " ").title(),
                 f"{info.get('price_cents_kwh', '?'):.2f}",
-                str(info.get("period", "")),
+                _cell(info.get("period", "")),
             )
     console.print(table)
 
@@ -353,18 +380,19 @@ def fred(ctx: click.Context, series_id: str, limit: int) -> None:
     f = _get_fetcher()
     data = _run(economic.fetch_fred_series(f, series_id=series_id, limit=limit))
 
-    if ctx.obj.get("json") or "error" in data:
-        _print_json(data)
+    if _bail_on_error(ctx, data):
         return
 
     obs = data.get("observations", [])
     title = data.get("title", series_id)
-    table = Table(title=f"FRED: {title}", box=box.SIMPLE_HEAVY)
+    # FRED series titles are remote free text — the table title is a
+    # markup surface too.
+    table = Table(title=f"FRED: {escape(str(title))}", box=box.SIMPLE_HEAVY)
     table.add_column("Date", style="bold")
     table.add_column("Value", justify="right")
 
     for o in obs[:20]:
-        table.add_row(o.get("date", ""), str(o.get("value", "")))
+        table.add_row(_cell(o.get("date", "")), _cell(o.get("value", "")))
     console.print(table)
 
 
@@ -403,10 +431,10 @@ def earthquakes(ctx: click.Context, min_mag: float, hours: int) -> None:
         alert = q.get("alert_level") or ""
         table.add_row(
             f"[{style}]{mag:.1f}[/{style}]" if style else f"{mag:.1f}",
-            q.get("place", "Unknown"),
+            _cell(q.get("place", "Unknown")),
             f"{q.get('depth_km', 0):.1f}",
-            q.get("time", "")[:19],
-            alert,
+            _cell(q.get("time", "")[:19]),
+            _cell(alert),
         )
     console.print(table)
 
@@ -419,8 +447,7 @@ def fires(ctx: click.Context, region: str | None) -> None:
     f = _get_fetcher()
     data = _run(wildfire.fetch_wildfires(f, region=region))
 
-    if ctx.obj.get("json") or "error" in data:
-        _print_json(data)
+    if _bail_on_error(ctx, data):
         return
 
     console.print(
@@ -453,8 +480,7 @@ def conflicts(ctx: click.Context, country: str | None, days: int) -> None:
     f = _get_fetcher()
     data = _run(conflict.fetch_acled_events(f, country=country, days=days))
 
-    if ctx.obj.get("json") or "error" in data:
-        _print_json(data)
+    if _bail_on_error(ctx, data):
         return
 
     events = data.get("events", [])
@@ -474,10 +500,10 @@ def conflicts(ctx: click.Context, country: str | None, days: int) -> None:
         style = "red bold" if fat >= 10 else "yellow" if fat > 0 else ""
         fat_str = f"[{style}]{fat}[/{style}]" if style else str(fat)
         table.add_row(
-            str(e.get("event_date", ""))[:10],
-            e.get("event_type", ""),
-            e.get("country", ""),
-            e.get("location", ""),
+            _cell(str(e.get("event_date", ""))[:10]),
+            _cell(e.get("event_type", "")),
+            _cell(e.get("country", "")),
+            _cell(e.get("location", "")),
             fat_str,
         )
     console.print(table)
@@ -513,9 +539,9 @@ def flights(ctx: click.Context, bbox: str | None) -> None:
 
     for a in aircraft[:30]:
         table.add_row(
-            a.get("callsign", "?"),
-            a.get("icao24", ""),
-            a.get("origin_country", ""),
+            _cell(a.get("callsign", "?")),
+            _cell(a.get("icao24", "")),
+            _cell(a.get("origin_country", "")),
             f"{a.get('altitude_m') or 0:,.0f}",
             f"{a.get('velocity_ms') or 0:.0f}",
         )
@@ -550,8 +576,8 @@ def posture(ctx: click.Context) -> None:
         table.add_row(
             name.replace("_", " ").title(),
             count_str,
-            ", ".join(info.get("countries", [])[:5]),
-            ", ".join(info.get("sample_callsigns", [])[:3]),
+            _cell(", ".join(info.get("countries", [])[:5])),
+            _cell(", ".join(info.get("sample_callsigns", [])[:3])),
         )
     console.print(table)
 
@@ -613,7 +639,7 @@ def cables(ctx: click.Context) -> None:
         table.add_row(
             name.replace("_", " ").title(),
             status_labels.get(score, str(score)),
-            ", ".join(info.get("cables", [])[:3]),
+            _cell(", ".join(info.get("cables", [])[:3])),
             str(len(info.get("relevant_warnings", []))),
         )
     console.print(table)
@@ -692,7 +718,7 @@ def climate_cmd(ctx: click.Context) -> None:
         t_str = (
             f"[{t_style}]{temp_a:+.1f}C[/{t_style}]" if t_style else f"{temp_a:+.1f}C"
         )
-        table.add_row(z.get("name", key), t_str, f"{prec_a:+.0f}%", flag)
+        table.add_row(_cell(z.get("name", key)), t_str, f"{prec_a:+.0f}%", flag)
     console.print(table)
 
 
@@ -790,7 +816,7 @@ def trending(ctx: click.Context, min_count: int) -> None:
     table.add_column("Count", justify="right")
 
     for i, kw in enumerate(keywords[:30], 1):
-        table.add_row(str(i), kw["word"], str(kw["count"]))
+        table.add_row(str(i), _cell(kw["word"]), str(kw["count"]))
     console.print(table)
 
 
@@ -814,7 +840,7 @@ def gdelt(ctx: click.Context, query: str, mode: str, limit: int) -> None:
         console.print(f"[bold]{len(articles)} articles[/bold] for '{query}'\n")
         for a in articles[:20]:
             title = escape(a.get("title", "")[:80])
-            domain = a.get("domain", "")
+            domain = escape(a.get("domain", ""))
             console.print(f"  [bold]{title}[/bold]  ({domain})")
     else:
         console.print(f"[bold]Timeline volume for '{query}'[/bold]")
@@ -856,9 +882,9 @@ def predictions(ctx: click.Context, limit: int) -> None:
             "green" if "yes" in sentiment else "red" if "no" in sentiment else "yellow"
         )
         table.add_row(
-            (m.get("question", "")[:50]),
+            _cell(m.get("question", "")[:50]),
             f"{yes_pct:.0f}%",
-            f"[{s_style}]{sentiment}[/{s_style}]",
+            f"[{s_style}]{escape(str(sentiment))}[/{s_style}]",
             f"${vol:,.0f}",
         )
     console.print(table)
@@ -893,7 +919,7 @@ def displacement_cmd(ctx: click.Context, year: int | None) -> None:
 
     for c in by_origin[:15]:
         table.add_row(
-            c.get("country", ""),
+            _cell(c.get("country", "")),
             f"{c.get('total_displaced', 0):,}",
             f"{c.get('refugees', 0):,}",
             f"{c.get('internally_displaced', 0):,}",
@@ -941,7 +967,9 @@ def delays(ctx: click.Context) -> None:
             if statuses
             else "Details unavailable"
         )
-        table.add_row(d.get("code", ""), d.get("name", ""), info[:80])
+        table.add_row(
+            _cell(d.get("code", "")), _cell(d.get("name", "")), _cell(info[:80])
+        )
     console.print(table)
 
 
@@ -988,13 +1016,17 @@ def threats(ctx: click.Context, limit: int) -> None:
             "medium": "",
             "low": "dim",
         }.get(sev, "")
-        sev_str = f"[{sev_style}]{sev}[/{sev_style}]" if sev_style else sev
+        sev_str = (
+            f"[{sev_style}]{escape(str(sev))}[/{sev_style}]"
+            if sev_style
+            else _cell(sev)
+        )
         table.add_row(
             sev_str,
-            t.get("type", ""),
-            (t.get("indicator", ""))[:40],
-            (t.get("threat", ""))[:30],
-            t.get("source_feed", ""),
+            _cell(t.get("type", "")),
+            _cell((t.get("indicator", ""))[:40]),
+            _cell((t.get("threat", ""))[:30]),
+            _cell(t.get("source_feed", "")),
         )
     console.print(table)
 
@@ -1043,8 +1075,7 @@ def dossier(ctx: click.Context, country: str) -> None:
     f = _get_fetcher()
     data = _run(fetch_country_dossier(f, country=country))
 
-    if ctx.obj.get("json") or "error" in data:
-        _print_json(data)
+    if _bail_on_error(ctx, data):
         return
 
     overview = data.get("overview", {})
@@ -1079,8 +1110,8 @@ def dossier(ctx: click.Context, country: str) -> None:
     if upcoming:
         next_e = upcoming[0]
         console.print(
-            f"[yellow]Elections:[/yellow] {next_e.get('election_type')} on {next_e.get('date')} "
-            f"(risk: {next_e.get('risk_score', 0):.0f})"
+            f"[yellow]Elections:[/yellow] {escape(str(next_e.get('election_type')))} "
+            f"on {next_e.get('date')} (risk: {next_e.get('risk_score', 0):.0f})"
         )
 
     # Sanctions
@@ -1114,8 +1145,7 @@ def risk(ctx: click.Context, limit: int) -> None:
     f = _get_fetcher()
     data = _run(intelligence.fetch_risk_scores(f, limit=limit))
 
-    if ctx.obj.get("json") or "error" in data:
-        _print_json(data)
+    if _bail_on_error(ctx, data):
         return
 
     table = Table(title="Country Risk Scores", box=box.SIMPLE_HEAVY)
@@ -1133,11 +1163,13 @@ def risk(ctx: click.Context, limit: int) -> None:
             "moderate": "",
             "low": "dim",
         }.get(level, "")
-        l_str = f"[{l_style}]{level}[/{l_style}]" if l_style else level
+        l_str = (
+            f"[{l_style}]{escape(str(level))}[/{l_style}]" if l_style else _cell(level)
+        )
         table.add_row(
             str(i),
-            c.get("country", ""),
-            str(c.get("events_30d", 0)),
+            _cell(c.get("country", "")),
+            _cell(c.get("events_30d", 0)),
             f"{c.get('risk_score', 0):.0f}",
             l_str,
         )
@@ -1152,8 +1184,7 @@ def instability(ctx: click.Context, country_code: str | None) -> None:
     f = _get_fetcher()
     data = _run(intelligence.fetch_instability_index(f, country_code=country_code))
 
-    if ctx.obj.get("json") or "error" in data:
-        _print_json(data)
+    if _bail_on_error(ctx, data):
         return
 
     if country_code:
@@ -1181,11 +1212,15 @@ def instability(ctx: click.Context, country_code: str | None) -> None:
                 "medium": "",
                 "low": "dim",
             }.get(level, "")
-            l_str = f"[{l_style}]{level}[/{l_style}]" if l_style else level
+            l_str = (
+                f"[{l_style}]{escape(str(level))}[/{l_style}]"
+                if l_style
+                else _cell(level)
+            )
             table.add_row(
-                f"{c.get('country_name', '')} ({c.get('country_code', '')})",
+                _cell(f"{c.get('country_name', '')} ({c.get('country_code', '')})"),
                 f"{c.get('instability_index', 0):.0f}",
-                str(c.get("events_30d", 0)),
+                _cell(c.get("events_30d", 0)),
                 l_str,
             )
         console.print(table)
@@ -1203,8 +1238,7 @@ def btc(ctx: click.Context) -> None:
     f = _get_fetcher()
     data = _run(markets.fetch_btc_technicals(f))
 
-    if ctx.obj.get("json") or "error" in data:
-        _print_json(data)
+    if _bail_on_error(ctx, data):
         return
 
     console.print(f"[bold]BTC Technicals[/bold]  price: ${data.get('price', 0):,.2f}\n")
@@ -1225,7 +1259,8 @@ def btc(ctx: click.Context) -> None:
         "green" if cross == "golden_cross" else "red" if cross == "death_cross" else ""
     )
     table.add_row(
-        "Cross Signal", f"[{c_style}]{cross}[/{c_style}]" if c_style else cross
+        "Cross Signal",
+        f"[{c_style}]{escape(str(cross))}[/{c_style}]" if c_style else _cell(cross),
     )
     table.add_row("ATH Distance", f"{data.get('ath_distance_pct', 0):.1f}%")
     table.add_row(
@@ -1279,7 +1314,10 @@ def central_banks_cmd(ctx: click.Context) -> None:
         )
         rate_str = f"[{style}]{rate:.2f}[/{style}]" if style else f"{rate:.2f}"
         table.add_row(
-            r.get("bank", ""), r.get("country", ""), rate_str, r.get("as_of", "")
+            _cell(r.get("bank", "")),
+            _cell(r.get("country", "")),
+            rate_str,
+            _cell(r.get("as_of", "")),
         )
     console.print(table)
 
@@ -1308,7 +1346,7 @@ def shipping_cmd(ctx: click.Context) -> None:
         chg = q.get("change_pct") or 0
         style = "green" if chg >= 0 else "red"
         table.add_row(
-            q.get("symbol", ""),
+            _cell(q.get("symbol", "")),
             f"${q.get('price', 0):,.2f}",
             f"[{style}]{chg:+.2f}%[/{style}]",
         )
@@ -1392,10 +1430,10 @@ def elections_cmd(ctx: click.Context, country: str | None) -> None:
         r_style = "red bold" if risk >= 4 else "yellow" if risk >= 2 else ""
         r_str = f"[{r_style}]{risk:.1f}[/{r_style}]" if r_style else f"{risk:.1f}"
         table.add_row(
-            e.get("date", ""),
-            e.get("country", ""),
-            e.get("type", ""),
-            str(e.get("days_until", "")),
+            _cell(e.get("date", "")),
+            _cell(e.get("country", "")),
+            _cell(e.get("type", "")),
+            _cell(e.get("days_until", "")),
             r_str,
         )
     console.print(table)
@@ -1453,7 +1491,7 @@ def space_cmd(ctx: click.Context) -> None:
     ):
         val = data.get(key)
         if val is not None:
-            table.add_row(key.replace("_", " ").title(), str(val))
+            table.add_row(key.replace("_", " ").title(), _cell(val))
     console.print(table)
 
 
@@ -1510,8 +1548,7 @@ def fleet_cmd(ctx: click.Context) -> None:
     f = _get_fetcher()
     data = _run(fetch_usni_fleet(f))
 
-    if ctx.obj.get("json") or "error" in data:
-        _print_json(data)
+    if _bail_on_error(ctx, data):
         return
 
     console.print(f"[bold]{escape(data.get('report_title', 'Fleet Report'))}[/bold]\n")
@@ -1538,10 +1575,10 @@ def fleet_cmd(ctx: click.Context) -> None:
         table.add_column("Region")
         for s in ships[:20]:
             table.add_row(
-                s.get("name", ""),
-                s.get("hull_number", ""),
-                s.get("type", ""),
-                s.get("region", ""),
+                _cell(s.get("name", "")),
+                _cell(s.get("hull_number", "")),
+                _cell(s.get("type", "")),
+                _cell(s.get("region", "")),
             )
         console.print(table)
 
@@ -1626,7 +1663,9 @@ def spending_cmd(ctx: click.Context, limit: int) -> None:
         budget = a.get("budget_authority", 0) or 0
         obligated = a.get("obligated", 0) or 0
         table.add_row(
-            a.get("name", ""), f"${budget / 1e9:,.1f}B", f"${obligated / 1e9:,.1f}B"
+            _cell(a.get("name", "")),
+            f"${budget / 1e9:,.1f}B",
+            f"${obligated / 1e9:,.1f}B",
         )
     console.print(table)
 
@@ -1716,8 +1755,7 @@ def traffic(ctx: click.Context) -> None:
     f = _get_fetcher()
     data = _run(fetch_traffic_flow(f))
 
-    if ctx.obj.get("json") or "error" in data:
-        _print_json(data)
+    if _bail_on_error(ctx, data):
         return
 
     console.print(
@@ -1738,7 +1776,7 @@ def traffic(ctx: click.Context) -> None:
             c.get("name", ""),
             c.get("country", ""),
             f"[{style}]{cong}%[/{style}]",
-            str(c.get("current_speed_kmh", "")),
+            _cell(c.get("current_speed_kmh", "")),
         )
     console.print(table)
 
@@ -1752,8 +1790,7 @@ def incidents(ctx: click.Context) -> None:
     f = _get_fetcher()
     data = _run(fetch_traffic_incidents(f))
 
-    if ctx.obj.get("json") or "error" in data:
-        _print_json(data)
+    if _bail_on_error(ctx, data):
         return
 
     console.print(
@@ -1771,9 +1808,9 @@ def incidents(ctx: click.Context) -> None:
         delay_min = round(inc.get("delay_seconds", 0) / 60)
         table.add_row(
             inc.get("region", ""),
-            inc.get("description", "")[:40],
+            _cell(inc.get("description", "")[:40]),
             str(delay_min) if delay_min else "-",
-            inc.get("from_road", "")[:30],
+            _cell(inc.get("from_road", "")[:30]),
         )
     console.print(table)
 
@@ -1785,8 +1822,7 @@ def air_traffic_cmd(ctx: click.Context) -> None:
     f = _get_fetcher()
     data = _run(aviation.fetch_domestic_flights(f))
 
-    if ctx.obj.get("json") or "error" in data:
-        _print_json(data)
+    if _bail_on_error(ctx, data):
         return
 
     console.print(
@@ -1810,7 +1846,7 @@ def air_traffic_cmd(ctx: click.Context) -> None:
     if data.get("busiest_origins"):
         console.print("\n[bold]Busiest Origins:[/bold]")
         for o in data["busiest_origins"][:10]:
-            console.print(f"  {o['country']}: {o['count']}")
+            console.print(f"  {escape(str(o['country']))}: {o['count']}")
 
 
 @main.command()
@@ -1824,8 +1860,7 @@ def webcams_cmd(ctx: click.Context, category: str, limit: int) -> None:
     f = _get_fetcher()
     data = _run(fetch_webcams(f, category=category, limit=limit))
 
-    if ctx.obj.get("json") or "error" in data:
-        _print_json(data)
+    if _bail_on_error(ctx, data):
         return
 
     console.print(
@@ -1840,10 +1875,10 @@ def webcams_cmd(ctx: click.Context, category: str, limit: int) -> None:
 
     for cam in data.get("cameras", []):
         table.add_row(
-            cam.get("title", "")[:30],
-            cam.get("city", ""),
-            cam.get("country", ""),
-            cam.get("status", ""),
+            _cell(cam.get("title", "")[:30]),
+            _cell(cam.get("city", "")),
+            _cell(cam.get("country", "")),
+            _cell(cam.get("status", "")),
         )
     console.print(table)
 
@@ -1946,8 +1981,13 @@ def dashboard(port: int, host: str) -> None:
 @click.option(
     "--sections", "-s", default=None, help="Comma-separated section names to include"
 )
+@click.pass_context
 def report(
-    output: str | None, title: str | None, fmt: str, sections: str | None
+    ctx: click.Context,
+    output: str | None,
+    title: str | None,
+    fmt: str,
+    sections: str | None,
 ) -> None:
     """Generate a PDF or HTML intelligence report."""
     from .reports import generate_report
@@ -1962,9 +2002,8 @@ def report(
             )
         )
 
-    if "error" in result:
-        console.print(f"[red]Error:[/red] {escape(str(result['error']))}")
-        if "fallback" in result:
+    if _bail_on_error(ctx, result):
+        if "fallback" in result and not ctx.obj.get("json"):
             # escape keeps the literal "[pdf]" in the install hint from
             # being eaten as a markup tag — the printed command must be
             # runnable verbatim.

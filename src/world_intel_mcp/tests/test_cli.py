@@ -8,28 +8,37 @@ options reach the fetch functions with the right names.
 Two former cli.py bug classes are now covered by honest-contract tests
 (they were pinned here as characterization tests until fixed):
 
-1. Error surfacing: every data command bails via ``cli._bail_on_error``,
-   so an upstream {"error": ...} prints the error text in red instead of
-   rendering as a healthy-looking empty table ("0 earthquakes", "No
-   market data available"). In --json-output mode the raw dict (error
-   included) is printed unchanged. An outage must never be
+1. Error surfacing: every data command — the ``report`` command
+   included — bails via ``cli._bail_on_error``, so an upstream
+   {"error": ...} prints one consistent red ``Error:`` line in table
+   mode instead of rendering as a healthy-looking empty table ("0
+   earthquakes") or dumping raw JSON at a table-mode user. In
+   --json-output mode the raw dict (error included) is printed
+   unchanged with no extra rendering. An outage must never be
    shape-identical to a quiet world. See the *_error_dict tests and the
-   parametrized test_error_dict_reaches_table_output sweep.
+   parametrized test_error_dict_reaches_table_output sweep, which now
+   covers the 17 commands that used to dump raw JSON in table mode.
 
 2. Rich markup escaping: values interpolated into ``[...]`` label
    constructs (news category, sanctions entity_type, ai-watch source,
    gh-trending language) and remote free text (titles, descriptions,
    feed names, the report command's literal ``[pdf]`` install hint) are
-   escaped with rich.markup.escape, so lowercase bracketed labels render
-   literally instead of parsing as markup tags, and bracketed sequences
-   inside remote data neither vanish nor raise MarkupError. See the
-   *_label_renders tests, test_report_error_with_fallback_hint, and
-   test_news_bracketed_remote_title_survives.
+   escaped with rich.markup.escape, and remote values rendered inside
+   Rich Table cells go through ``cli._cell`` (rich.text.Text), so
+   bracketed sequences inside remote data render literally instead of
+   being swallowed as markup tags or raising MarkupError. See the
+   *_label_renders tests, test_report_error_with_fallback_hint,
+   test_news_bracketed_remote_title_survives, and the "Markup injection
+   via table cells" section.
 """
 
 import pytest
 from click.testing import CliRunner
 
+import world_intel_mcp.analysis.dossier as dossier_analysis
+import world_intel_mcp.reports as reports_mod
+import world_intel_mcp.sources.traffic as traffic_src
+import world_intel_mcp.sources.webcams as webcams_src
 from world_intel_mcp import cli
 
 
@@ -268,13 +277,15 @@ def test_btc_technicals_values_and_na_branches(
     assert "N/A" in result.output  # sma_200 / mayer / 30d all None
 
 
-def test_btc_error_dict_is_surfaced_as_json(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_btc_error_dict_prints_error_line(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         cli.markets, "fetch_btc_technicals", _fake({"error": "coingecko down"})
     )
     result = _invoke("btc")
     assert result.exit_code == 0
+    assert "Error:" in result.output
     assert "coingecko down" in result.output
+    assert '"error"' not in result.output  # no raw JSON dump at a table-mode user
 
 
 # ---------------------------------------------------------------------------
@@ -298,7 +309,7 @@ def test_energy_renders_oil_and_gas(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "$2.9" in result.output
 
 
-def test_energy_error_dict_is_surfaced_as_json(
+def test_energy_error_dict_prints_error_line(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
@@ -306,7 +317,9 @@ def test_energy_error_dict_is_surfaced_as_json(
     )
     result = _invoke("energy")
     assert result.exit_code == 0
+    assert "Error:" in result.output
     assert "EIA_API_KEY missing" in result.output
+    assert '"error"' not in result.output
 
 
 def test_gas_prices_renders_changes_and_em_dash_for_missing(
@@ -379,13 +392,15 @@ def test_fred_passes_series_and_limit(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "4.2" in result.output
 
 
-def test_fred_error_dict_is_surfaced_as_json(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_fred_error_dict_prints_error_line(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         cli.economic, "fetch_fred_series", _fake({"error": "series not found"})
     )
     result = _invoke("fred", "NOPE")
     assert result.exit_code == 0
+    assert "Error:" in result.output
     assert "series not found" in result.output
+    assert '"error"' not in result.output
 
 
 def test_central_banks_renders_rates_and_fred_tag(
@@ -494,13 +509,15 @@ def test_fires_renders_regions_and_skips_zero_counts(
     assert "europe" not in result.output  # zero-count regions skipped
 
 
-def test_fires_error_dict_is_surfaced_as_json(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_fires_error_dict_prints_error_line(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         cli.wildfire, "fetch_wildfires", _fake({"error": "FIRMS key missing"})
     )
     result = _invoke("fires")
     assert result.exit_code == 0
+    assert "Error:" in result.output
     assert "FIRMS key missing" in result.output
+    assert '"error"' not in result.output
 
 
 def test_climate_renders_anomalies_and_sig_flag(
@@ -590,7 +607,7 @@ def test_conflicts_passes_options_and_renders_events(
     assert "12" in result.output
 
 
-def test_conflicts_error_dict_is_surfaced_as_json(
+def test_conflicts_error_dict_prints_error_line(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
@@ -598,7 +615,9 @@ def test_conflicts_error_dict_is_surfaced_as_json(
     )
     result = _invoke("conflicts")
     assert result.exit_code == 0
+    assert "Error:" in result.output
     assert "ACLED token missing" in result.output
+    assert '"error"' not in result.output
 
 
 def test_flights_passes_bbox_and_renders_aircraft(
@@ -1127,17 +1146,19 @@ def test_dossier_renders_all_sections(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "Baseline risk: 78/100" in result.output
 
 
-def test_dossier_error_dict_is_surfaced_as_json(
+def test_dossier_error_dict_prints_error_line(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import world_intel_mcp.analysis.dossier as dossier_mod
-
     monkeypatch.setattr(
-        dossier_mod, "fetch_country_dossier", _fake({"error": "unknown country XX"})
+        dossier_analysis,
+        "fetch_country_dossier",
+        _fake({"error": "unknown country XX"}),
     )
     result = _invoke("dossier", "-c", "XX")
     assert result.exit_code == 0
+    assert "Error:" in result.output
     assert "unknown country XX" in result.output
+    assert '"error"' not in result.output
 
 
 # ---------------------------------------------------------------------------
@@ -1323,13 +1344,15 @@ def test_fleet_renders_totals_and_ships(monkeypatch: pytest.MonkeyPatch) -> None
     assert "CVN-78" in result.output
 
 
-def test_fleet_error_dict_is_surfaced_as_json(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_fleet_error_dict_prints_error_line(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         cli, "fetch_usni_fleet", _fake({"error": "USNI page structure changed"})
     )
     result = _invoke("fleet")
     assert result.exit_code == 0
+    assert "Error:" in result.output
     assert "USNI page structure changed" in result.output
+    assert '"error"' not in result.output
 
 
 def test_hn_renders_stories(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1511,17 +1534,17 @@ def test_traffic_renders_cities(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "18" in result.output
 
 
-def test_traffic_error_dict_is_surfaced_as_json(
+def test_traffic_error_dict_prints_error_line(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import world_intel_mcp.sources.traffic as traffic_mod
-
     monkeypatch.setattr(
-        traffic_mod, "fetch_traffic_flow", _fake({"error": "TOMTOM key missing"})
+        traffic_src, "fetch_traffic_flow", _fake({"error": "TOMTOM key missing"})
     )
     result = _invoke("traffic")
     assert result.exit_code == 0
+    assert "Error:" in result.output
     assert "TOMTOM key missing" in result.output
+    assert '"error"' not in result.output
 
 
 def test_incidents_renders_delays_and_dash_for_zero(
@@ -1647,8 +1670,6 @@ def test_sync_with_source_reports_not_implemented() -> None:
 def test_report_success_panel_and_option_passthrough(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import world_intel_mcp.reports as reports_mod
-
     calls: list = []
     payload = {
         "path": "/tmp/r.html",
@@ -1680,8 +1701,6 @@ def test_report_success_panel_and_option_passthrough(
 
 
 def test_report_error_with_fallback_hint(monkeypatch: pytest.MonkeyPatch) -> None:
-    import world_intel_mcp.reports as reports_mod
-
     payload = {
         "error": "WeasyPrint not installed",
         "fallback": "pip install -e '.[pdf]'",
@@ -1695,6 +1714,286 @@ def test_report_error_with_fallback_hint(monkeypatch: pytest.MonkeyPatch) -> Non
     # the escape fix Rich ate the literal "[pdf]" as a markup tag and the
     # printed command would NOT have installed the pdf extra.
     assert "pip install -e '.[pdf]'" in result.output
+
+
+def test_report_error_json_mode_passes_raw_dict(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # report joins the shared _bail_on_error contract: --json-output gets
+    # the raw dict (fallback hint included as data), no error rendering.
+    payload = {
+        "error": "WeasyPrint not installed",
+        "fallback": "pip install -e '.[pdf]'",
+    }
+    monkeypatch.setattr(reports_mod, "generate_report", _fake(payload))
+    result = _invoke("--json-output", "report")
+    assert result.exit_code == 0
+    assert '"error"' in result.output
+    assert '"fallback"' in result.output
+    assert "Error:" not in result.output
+
+
+def test_report_success_json_mode_passes_raw_dict(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = {
+        "path": "/tmp/r.html",
+        "format": "html",
+        "size_bytes": 123_456,
+        "sections_included": ["markets"],
+        "sections_failed": [],
+        "generation_seconds": 4.2,
+    }
+    monkeypatch.setattr(reports_mod, "generate_report", _fake(payload))
+    result = _invoke("--json-output", "report")
+    assert result.exit_code == 0
+    assert '"path"' in result.output
+    assert "Report generated" not in result.output
+
+
+# ---------------------------------------------------------------------------
+# Markup injection via table cells: remote data must render literally
+# ---------------------------------------------------------------------------
+
+# Two failure modes, both must be dead: a well-formed tag pair like
+# "[red]fake[/red]" is silently swallowed (styled, tags eaten), and a
+# stray closing tag like "[/]" raises MarkupError and crashes the
+# command. Remote values inside Rich Table cells go through cli._cell
+# (rich.text.Text), which renders content literally while column-level
+# style/justify still apply.
+
+
+def test_earthquakes_bracketed_place_renders_literally(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = {
+        "count": 2,
+        "earthquakes": [
+            {
+                "magnitude": 5.1,
+                "place": "Coast of [/] Chile",
+                "depth_km": 10.0,
+                "time": "2026-08-31T12:00:00.000Z",
+                "alert_level": None,
+            },
+            {
+                "magnitude": 4.6,
+                "place": "[red]fake[/red] quake zone",
+                "depth_km": 5.2,
+                "time": "2026-08-31T13:00:00.000Z",
+                "alert_level": None,
+            },
+        ],
+    }
+    monkeypatch.setattr(cli.seismology, "fetch_earthquakes", _fake(payload))
+    result = _invoke("earthquakes")
+    assert result.exit_code == 0
+    assert "Coast of [/] Chile" in result.output
+    assert "[red]fake[/red] quake zone" in result.output
+
+
+def test_threats_bracketed_indicator_renders_literally(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = {
+        "count": 1,
+        "feeds_successful": 1,
+        "feeds_attempted": 1,
+        "by_severity": {"critical": 1, "high": 0, "medium": 0, "low": 0},
+        "threats": [
+            {
+                "severity": "critical",
+                "type": "ip",
+                "indicator": "[red]fake[/red] indicator",
+                "threat": "botnet [/] C2",
+                "source_feed": "feodo",
+            }
+        ],
+    }
+    monkeypatch.setattr(cli.cyber, "fetch_cyber_threats", _fake(payload))
+    result = _invoke("threats")
+    assert result.exit_code == 0
+    assert "[red]fake[/red] indicator" in result.output
+    assert "botnet [/] C2" in result.output
+
+
+def test_conflicts_bracketed_location_renders_literally(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = {
+        "count": 1,
+        "events": [
+            {
+                "event_date": "2026-08-30",
+                "event_type": "[bold]Battles[/bold]",
+                "country": "Ukraine",
+                "location": "Kharkiv [/] oblast",
+                "fatalities": 0,
+            }
+        ],
+    }
+    monkeypatch.setattr(cli.conflict, "fetch_acled_events", _fake(payload))
+    result = _invoke("conflicts")
+    assert result.exit_code == 0
+    assert "[bold]Battles[/bold]" in result.output
+    assert "Kharkiv [/] oblast" in result.output
+
+
+def test_flights_bracketed_callsign_renders_literally(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = {
+        "count": 1,
+        "aircraft": [
+            {
+                "callsign": "[dim]RCH123[/dim]",
+                "icao24": "ae1234",
+                "origin_country": "Neverland [/]",
+                "altitude_m": 10_000,
+                "velocity_ms": 250.0,
+            }
+        ],
+    }
+    monkeypatch.setattr(cli.military, "fetch_military_flights", _fake(payload))
+    result = _invoke("flights")
+    assert result.exit_code == 0
+    assert "[dim]RCH123[/dim]" in result.output
+    assert "Neverland [/]" in result.output
+
+
+def test_predictions_bracketed_question_renders_literally(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = {
+        "markets": [
+            {
+                "question": "Will [/] X happen",
+                "yes_probability": 0.62,
+                "sentiment": "likely_yes",
+                "volume_24h": 1_000,
+            }
+        ]
+    }
+    monkeypatch.setattr(cli.prediction, "fetch_prediction_markets", _fake(payload))
+    result = _invoke("predictions")
+    assert result.exit_code == 0
+    assert "Will [/] X happen" in result.output
+
+
+def test_elections_bracketed_country_renders_literally(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = {
+        "elections": [
+            {
+                "date": "2026-10-04",
+                "country": "[green]Fake[/green]land",
+                "type": "general [/] vote",
+                "days_until": 33,
+                "risk_score": 1.0,
+            }
+        ]
+    }
+    monkeypatch.setattr(cli.elections, "fetch_election_calendar", _fake(payload))
+    result = _invoke("elections")
+    assert result.exit_code == 0
+    assert "[green]Fake[/green]land" in result.output
+    assert "general [/] vote" in result.output
+
+
+def test_central_banks_bracketed_bank_renders_literally(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = {
+        "count": 1,
+        "fred_available": False,
+        "rates": [
+            {
+                "bank": "Bank [/] of Testland",
+                "country": "[red]TL[/red]",
+                "rate": 4.25,
+                "as_of": "2026-08-01",
+            }
+        ],
+    }
+    monkeypatch.setattr(cli, "fetch_central_bank_rates", _fake(payload))
+    result = _invoke("central-banks")
+    assert result.exit_code == 0
+    assert "Bank [/] of Testland" in result.output
+    assert "[red]TL[/red]" in result.output
+
+
+def test_fleet_bracketed_ship_name_renders_literally(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = {
+        "report_title": "Fleet Report",
+        "force_totals": {},
+        "ships": [
+            {
+                "name": "USS [red]Fake[/red]",
+                "hull_number": "CVN-00",
+                "type": "carrier",
+                "region": "Pacific [/] Fleet",
+            }
+        ],
+    }
+    monkeypatch.setattr(cli, "fetch_usni_fleet", _fake(payload))
+    result = _invoke("fleet")
+    assert result.exit_code == 0
+    assert "USS [red]Fake[/red]" in result.output
+    assert "Pacific [/] Fleet" in result.output
+
+
+def test_webcams_bracketed_title_renders_literally(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = {
+        "count": 1,
+        "cameras": [
+            {
+                "title": "Harbor [/] Cam",
+                "city": "[red]Rotterdam[/red]",
+                "country": "Netherlands",
+                "status": "active",
+            }
+        ],
+    }
+    monkeypatch.setattr(webcams_src, "fetch_webcams", _fake(payload))
+    result = _invoke("webcams")
+    assert result.exit_code == 0
+    assert "Harbor [/] Cam" in result.output
+    assert "[red]Rotterdam[/red]" in result.output
+
+
+def test_macro_bracketed_signal_renders_literally(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = {
+        "signals": {
+            "vix [/] proxy": {"value": 18.2, "classification": "regime [/] shift"},
+        }
+    }
+    monkeypatch.setattr(cli.markets, "fetch_macro_signals", _fake(payload))
+    result = _invoke("macro")
+    assert result.exit_code == 0
+    assert "vix [/] proxy" in result.output
+    assert "regime [/] shift" in result.output
+
+
+def test_fred_bracketed_series_title_renders_literally(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The table TITLE is a markup surface too: FRED series titles are
+    # remote free text.
+    payload = {
+        "title": "Rate[/]s",
+        "observations": [{"date": "2026-07-01", "value": "4.2"}],
+    }
+    monkeypatch.setattr(cli.economic, "fetch_fred_series", _fake(payload))
+    result = _invoke("fred", "UNRATE")
+    assert result.exit_code == 0
+    assert "Rate[/]s" in result.output
 
 
 # ---------------------------------------------------------------------------
@@ -1738,6 +2037,25 @@ _ERROR_SWEEP = [
     (("spending",), cli, "fetch_usa_spending"),
     (("bases",), cli.geospatial, "fetch_military_bases"),
     (("exchanges",), cli.geospatial, "fetch_stock_exchanges"),
+    # The 17 legacy commands that used to dump raw JSON at table-mode
+    # users on upstream error, unified onto _bail_on_error:
+    (("energy",), cli.economic, "fetch_energy_prices"),
+    (("gas-prices",), cli.economic, "fetch_gas_prices"),
+    (("natgas",), cli.economic, "fetch_residential_natgas_prices"),
+    (("electricity",), cli.economic, "fetch_electricity_rates"),
+    (("fred", "UNRATE"), cli.economic, "fetch_fred_series"),
+    (("fires",), cli.wildfire, "fetch_wildfires"),
+    (("conflicts",), cli.conflict, "fetch_acled_events"),
+    (("dossier",), dossier_analysis, "fetch_country_dossier"),
+    (("risk",), cli.intelligence, "fetch_risk_scores"),
+    (("instability",), cli.intelligence, "fetch_instability_index"),
+    (("btc",), cli.markets, "fetch_btc_technicals"),
+    (("fleet",), cli, "fetch_usni_fleet"),
+    (("traffic",), traffic_src, "fetch_traffic_flow"),
+    (("incidents",), traffic_src, "fetch_traffic_incidents"),
+    (("air-traffic",), cli.aviation, "fetch_domestic_flights"),
+    (("webcams",), webcams_src, "fetch_webcams"),
+    (("report",), reports_mod, "generate_report"),
 ]
 
 
@@ -1755,4 +2073,8 @@ def test_error_dict_reaches_table_output(
     monkeypatch.setattr(module, attr, _fake({"error": "upstream exploded"}))
     result = _invoke(*args)
     assert result.exit_code == 0
+    # One consistent human-readable surface in table mode: the shared
+    # red "Error:" line, never a raw JSON dump.
+    assert "Error:" in result.output
     assert "upstream exploded" in result.output
+    assert '"error"' not in result.output
