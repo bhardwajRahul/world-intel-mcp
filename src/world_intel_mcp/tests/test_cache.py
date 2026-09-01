@@ -97,3 +97,16 @@ def test_default_path_falls_back_when_unavailable(
         assert cache.get("fallback") == "ok"
     finally:
         cache.close()
+
+
+def test_cache_db_file_is_owner_only(tmp_path: Path) -> None:
+    """Issue #21 hardening: whatever sits in the cache gets served as
+    intelligence (stale fallback included), so the file must not be
+    writable — or readable — by other local users."""
+    db = tmp_path / "perms" / "cache.db"
+    cache = Cache(db)
+    try:
+        mode = db.stat().st_mode & 0o777
+        assert mode == 0o600
+    finally:
+        cache.close()

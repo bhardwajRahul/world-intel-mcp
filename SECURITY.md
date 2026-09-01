@@ -1,0 +1,80 @@
+# Security Policy
+
+## Reporting a vulnerability
+
+Open a GitHub issue with the label `security`, or email the address on
+the maintainer's GitHub profile if the details should stay private
+until fixed. Reports that include a runnable reproduction get fixed
+fastest. Please state the attacker position your finding assumes (see
+the threat model below): a report whose precondition is already
+arbitrary local write access to the user's files will be assessed
+against that boundary.
+
+## Threat model
+
+world-intel-mcp is a single-user, local tool. It runs as an MCP stdio
+server, a CLI, a local dashboard, or a local collector daemon, under
+one user account, on that user's machine. It aggregates free public
+OSINT feeds. Its trust boundaries:
+
+1. **Upstream data is untrusted and unauthenticated by design.** The
+   server aggregates public APIs and RSS feeds (USGS, GDELT, adsb.lol,
+   NASA FIRMS, and about 115 others). None of these are signed. The
+   server preserves provenance (`source` labels, per-feed propaganda
+   risk tiers, `_stale` markers, `data_gaps`, `cited` flags) so a
+   consumer can judge the data; it cannot make public data
+   trustworthy. Analysis outputs are derived from these inputs and
+   inherit their trust level. Treat every output as open-source
+   intelligence, not as verified ground truth.
+
+2. **The local machine is inside the trust boundary.** The SQLite
+   cache, the AOI store, and the optional Qdrant vector store live on
+   the user's own machine and are trusted by the process that wrote
+   them. An attacker who can already write the user's files or reach
+   the user's local services can feed the server false data; that same
+   position also allows patching this package's code, so in-database
+   integrity signing would not remove the attack, only relocate it.
+   Hardening applied at this boundary: the cache database is created
+   with owner-only permissions (0600), all SQL is parameterized, and
+   the codebase contains no shell execution, no `eval`/`exec`, and no
+   deserialization of non-JSON formats.
+
+3. **MCP tool arguments are untrusted input.** Arguments are validated
+   (ranges, types) where they parameterize queries, are never
+   interpolated into SQL (parameterized statements only), never reach
+   a shell (no subprocess usage exists in the package), and never
+   select filesystem paths (report output paths are server-generated,
+   not caller-supplied).
+
+4. **Optional local services are the operator's responsibility.**
+   Qdrant (vector search) and Ollama (brief generation) are reached at
+   `localhost` URLs. Bind them to loopback, as their defaults do; if
+   you expose them on a network, that exposure is outside this
+   project's control. Do not point `OLLAMA_API_URL` at an untrusted
+   host: its responses are rendered in briefs.
+
+5. **Stale data is a feature with a marker, not a hidden fallback.**
+   When an upstream fails, the fetcher may serve expired cache entries
+   so dashboards do not go blank. Such responses carry `_stale: true`,
+   and circuit-breaker state is visible via `intel_status`. Consumers
+   that must not act on stale data must check the marker.
+
+## Supported versions
+
+Only the latest release receives fixes.
+
+## Out of scope
+
+- Findings that assume arbitrary local file write, code execution, or
+  root on the user's machine (boundary 2 above).
+- The authenticity of upstream public OSINT data (boundary 1).
+- The network exposure of separately installed services (boundary 4).
+
+## Gaps / not covered
+
+- No cryptographic integrity protection on the cache or vector store;
+  see boundary 2 for why that is not the chosen control.
+- Dependency supply chain is managed by pinning and review, not by
+  vendoring; `pip install` trust applies.
+- The dashboard binds locally and has no authentication; do not
+  reverse-proxy it to an untrusted network.

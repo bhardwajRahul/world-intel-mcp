@@ -64,6 +64,15 @@ class Cache:
             "CREATE INDEX IF NOT EXISTS idx_cache_expires ON cache(expires_at)"
         )
         conn.commit()
+        # Owner-only permissions: the cache is trusted-by-design (whatever
+        # is in it gets served as intelligence, including to AOI briefs),
+        # so keep other local users from writing — or reading — it. The
+        # -wal/-shm sidecars inherit the db file's mode. Best-effort:
+        # non-POSIX filesystems may refuse.
+        try:
+            os.chmod(self.db_path, 0o600)
+        except OSError:
+            logger.debug("Could not chmod cache db at %s", self.db_path)
 
     def _get_conn(self) -> sqlite3.Connection:
         if self._conn is None:
