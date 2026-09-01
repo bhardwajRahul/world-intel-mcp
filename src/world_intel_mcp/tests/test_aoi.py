@@ -641,6 +641,7 @@ def _tools_registry():
         ("intel_aoi_delete", "aoi.delete_aoi"),
         ("intel_aoi_brief", "aoi.fetch_aoi_brief"),
         ("intel_aoi_escalation", "aoi.fetch_aoi_escalation"),
+        ("intel_aoi_digest", "aoi.fetch_aoi_digest"),
     ],
 )
 def test_aoi_tools_registered_and_dispatched(tool_name: str, fn_name: str) -> None:
@@ -1671,4 +1672,101 @@ def test_store_migrates_pre_shape_schema(tmp_path: Path) -> None:
     assert row["radius_km"] == 50.0
     # And new shapes write fine into the migrated table.
     assert "error" not in aoi.define_polygon_aoi(s, "PGH Square", _PGH_SQUARE)
+    s.close()
+
+
+# ---------------------------------------------------------------------------
+# intel_aoi_digest: one-call change sweep across all AOIs
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_aoi_digest_no_aois_is_honest_empty(fetcher, store: AOIStore) -> None:
+    result = await aoi.fetch_aoi_digest(fetcher, store)
+    assert "error" not in result
+    assert result["aois"] == []
+    assert result["count"] == 0
+    assert "No AOIs defined" in result["note"]
+
+
+@pytest.mark.asyncio
+async def test_aoi_digest_sweeps_all_aois_and_totals(
+    fetcher, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _patch_all_domains(monkeypatch)
+    s = AOIStore(tmp_path / "digest.db")
+    aoi.define_aoi(s, "Pittsburgh", _PGH_LAT, _PGH_LON, _PGH_RADIUS_KM)
+    aoi.define_polygon_aoi(s, "PGH Square", _PGH_SQUARE)
+
+    first = await aoi.fetch_aoi_digest(fetcher, s)
+    assert first["count"] == 2
+    assert all(entry["baseline"] for entry in first["aois"])
+    assert first["totals"]["new_items"] == 0
+    assert first["totals"]["departed_items"] == 0
+    # Per-AOI sections in the digest markdown.
+    assert "Pittsburgh" in first["markdown"]
+    assert "PGH Square" in first["markdown"]
+
+    # Second sweep: quake near1 replaced by near2 -> 1 new + 1 departed
+    # per AOI that contains both points.
+    async def _second_earthquakes(fetcher_, **kwargs):
+        return {
+            "earthquakes": [
+                {
+                    "id": "near2",
+                    "magnitude": 4.1,
+                    "place": "near Pittsburgh again",
+                    "latitude": _NEAR_LAT,
+                    "longitude": _NEAR_LON,
+                }
+            ]
+        }
+
+    monkeypatch.setattr(seismology, "fetch_earthquakes", _second_earthquakes)
+    second = await aoi.fetch_aoi_digest(fetcher, s)
+    assert not any(entry["baseline"] for entry in second["aois"])
+    assert second["totals"]["new_items"] == 2  # near2 entered both AOIs
+    assert second["totals"]["departed_items"] == 2  # near1 left both
+    pgh = next(e for e in second["aois"] if e["name"] == "Pittsburgh")
+    assert pgh["changes"]["earthquakes"]["new"][0]["key"] == "near2"
+    s.close()
+
+
+@pytest.mark.asyncio
+async def test_aoi_digest_names_filter_and_unknown_name(
+    fetcher, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _patch_all_domains(monkeypatch)
+    s = AOIStore(tmp_path / "digest2.db")
+    aoi.define_aoi(s, "Pittsburgh", _PGH_LAT, _PGH_LON, _PGH_RADIUS_KM)
+    aoi.define_aoi(s, "Austin", 30.27, -97.74, 40.0)
+
+    only = await aoi.fetch_aoi_digest(fetcher, s, names=["pittsburgh"])
+    assert [e["name"] for e in only["aois"]] == ["Pittsburgh"]
+
+    missing = await aoi.fetch_aoi_digest(fetcher, s, names=["Nowhere"])
+    assert "error" in missing
+    assert "Nowhere" in missing["error"]
+    s.close()
+
+
+@pytest.mark.asyncio
+async def test_aoi_digest_domain_error_stays_per_aoi(
+    fetcher, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failing domain shows up in that AOI's data_gaps without
+    contaminating the other AOIs' results."""
+    _patch_all_domains(monkeypatch)
+
+    async def _broken_earthquakes(fetcher_, **kwargs):
+        return {"error": "USGS down"}
+
+    monkeypatch.setattr(seismology, "fetch_earthquakes", _broken_earthquakes)
+    s = AOIStore(tmp_path / "digest3.db")
+    aoi.define_aoi(s, "Pittsburgh", _PGH_LAT, _PGH_LON, _PGH_RADIUS_KM)
+
+    result = await aoi.fetch_aoi_digest(fetcher, s)
+    entry = result["aois"][0]
+    assert any("Earthquakes" in g for g in entry["data_gaps"])
+    assert "error" not in result  # the digest itself succeeded
     s.close()

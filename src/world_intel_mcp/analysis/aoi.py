@@ -1768,3 +1768,110 @@ async def fetch_aoi_changes(fetcher, store: AOIStore, name: Any) -> dict:
         "source": "aoi-changes",
         "timestamp": _utc_now_iso(),
     }
+
+
+# ---------------------------------------------------------------------------
+# intel_aoi_digest: one-call change sweep across all AOIs
+# ---------------------------------------------------------------------------
+
+_DIGEST_CONCURRENCY = 3
+
+
+async def fetch_aoi_digest(fetcher, store: AOIStore, names: Any = None) -> dict:
+    """Run the change sweep (``fetch_aoi_changes``) across every defined
+    AOI - or the named subset - in one call, and compose a cross-AOI
+    digest. This IS a sweep: each AOI's change snapshot advances, so a
+    scheduler can call this one tool on an interval and get "what
+    entered or left each of my areas since last time".
+
+    Concurrency is capped (upstream fetches for the shared global
+    domains hit the cache across AOIs; per-AOI fetches like military
+    bboxes and news queries do not). Honest shapes throughout: no AOIs
+    is a note, not an error; unknown requested names ARE an error; a
+    domain failure stays inside that AOI's ``data_gaps``.
+    """
+    all_aois = store.list_all()
+    if names is not None:
+        if not isinstance(names, list) or not all(
+            isinstance(n, str) and n.strip() for n in names
+        ):
+            return {"error": "names must be a list of non-empty strings."}
+        by_key = {a["name"].strip().lower(): a for a in all_aois}
+        missing = [n for n in names if n.strip().lower() not in by_key]
+        if missing:
+            return {
+                "error": "Unknown AOI name(s): "
+                + ", ".join(sorted(missing))
+                + ". Use intel_aoi_list to see defined areas."
+            }
+        selected = [by_key[n.strip().lower()] for n in names]
+    else:
+        selected = all_aois
+
+    if not selected:
+        return {
+            "aois": [],
+            "count": 0,
+            "note": "No AOIs defined. Use intel_aoi_define (or the polygon/"
+            "corridor variants) to create one.",
+            "source": "aoi-digest",
+            "timestamp": _utc_now_iso(),
+        }
+
+    semaphore = asyncio.Semaphore(_DIGEST_CONCURRENCY)
+
+    async def _sweep(row: dict) -> dict:
+        async with semaphore:
+            return await fetch_aoi_changes(fetcher, store, row["name"])
+
+    results = await asyncio.gather(*[_sweep(row) for row in selected])
+
+    entries: list[dict] = []
+    total_new = total_departed = 0
+    md_parts = ["# AOI Digest", ""]
+    for row, result in zip(selected, results):
+        if "error" in result and "changes" not in result:
+            # A per-AOI hard failure (e.g. deleted concurrently): keep
+            # it visible without sinking the whole digest.
+            entries.append({"name": row["name"], "error": result["error"]})
+            md_parts += [f"## {row['name']}", f"_Error: {result['error']}_", ""]
+            continue
+        new_count = sum(len(c["new"]) for c in result["changes"].values())
+        departed_count = sum(len(c["departed"]) for c in result["changes"].values())
+        total_new += new_count
+        total_departed += departed_count
+        entries.append(
+            {
+                "name": result["aoi"]["name"],
+                "kind": result["aoi"]["kind"],
+                "baseline": result["baseline"],
+                "counts": result["counts"],
+                "changes": result["changes"],
+                "data_gaps": result["data_gaps"],
+            }
+        )
+        md_parts.append(f"## {result['aoi']['name']} ({result['aoi']['kind']})")
+        if result["baseline"]:
+            md_parts.append(
+                "_Baseline established; changes will report from the next sweep._"
+            )
+        elif new_count == 0 and departed_count == 0:
+            md_parts.append("_No changes since the last sweep._")
+        else:
+            for domain, change in result["changes"].items():
+                for item in change["new"]:
+                    md_parts.append(f"- NEW [{domain}] {item['summary']}")
+                for item in change["departed"]:
+                    md_parts.append(f"- DEPARTED [{domain}] {item['summary']}")
+        for gap in result["data_gaps"]:
+            md_parts.append(f"- data gap: {gap}")
+        md_parts.append("")
+
+    return {
+        "aois": entries,
+        "count": len(entries),
+        "totals": {"new_items": total_new, "departed_items": total_departed},
+        "markdown": "\n".join(md_parts),
+        "source": "aoi-digest",
+        "timestamp": _utc_now_iso(),
+    }

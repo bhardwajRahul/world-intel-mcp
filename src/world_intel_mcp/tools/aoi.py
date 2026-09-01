@@ -182,6 +182,20 @@ TOOLS: list[Tool] = [
     ),
     # --- Situation Brief (1 tool) ---
     Tool(
+        name="intel_aoi_digest",
+        description="Run the change sweep across every defined AOI (or a named subset) in one call: per-AOI new/departed/unchanged items, counts, data_gaps, and a combined markdown digest. This IS a sweep - each AOI's change snapshot advances - so a scheduler can call this one tool on an interval to learn what entered or left all watched areas. First-ever sweep per AOI is an explicit baseline. Optional: names (list of AOI names; unknown names are an error, no AOIs defined is a note).",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "names": {
+                    "type": "array",
+                    "description": "Optional subset of AOI names to sweep",
+                    "items": {"type": "string"},
+                },
+            },
+        },
+    ),
+    Tool(
         name="intel_situation_brief",
         description="Cited situational awareness brief, generated on demand over MCP (previously reachable only through the dashboard). Gathers a bounded server-side overview (earthquakes, military flights, ACLED conflict events, wildfires, cyber threats, disease outbreaks, news headlines, space weather, strategic posture, alert digest; not the dashboard's full 47-source fan-out), then synthesizes a 3-paragraph brief via local Ollama, or a mechanically-cited fallback summary when Ollama is unreachable. Returns brief, ai_generated, model, metrics_snapshot, a numbered sources list, and a cited flag that is true only when the brief text references a real source number.",
         inputSchema={"type": "object", "properties": {}},
@@ -278,6 +292,12 @@ async def _aoi_define_corridor(arguments: dict[str, Any]) -> Any:
     )
 
 
+async def _aoi_digest(arguments: dict[str, Any]) -> Any:
+    return await aoi.fetch_aoi_digest(
+        runtime.fetcher, runtime.aoi_store, names=arguments.get("names")
+    )
+
+
 async def _aoi_changes(arguments: dict[str, Any]) -> Any:
     return await aoi.fetch_aoi_changes(
         runtime.fetcher, runtime.aoi_store, name=arguments.get("name")
@@ -312,6 +332,7 @@ HANDLERS = {
     "intel_aoi_define_polygon": _aoi_define_polygon,
     "intel_aoi_define_corridor": _aoi_define_corridor,
     "intel_aoi_changes": _aoi_changes,
+    "intel_aoi_digest": _aoi_digest,
     "intel_situation_brief": _situation_brief,
     "intel_generate_report": _generate_report,
 }
