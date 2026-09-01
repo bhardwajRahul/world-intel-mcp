@@ -23,7 +23,7 @@
 | MCP tool parity | 122 tools declared in `TOOLS`; 122 routed in `_dispatch()` | :white_check_mark: | Keep as an invariant |
 | Optional vector runtime | Missing `qdrant-client` / `fastembed` previously surfaced as runtime failures | :white_check_mark: Fixed | Vector features now degrade cleanly and report availability |
 | Base-environment test run | `pytest -q` fails collection without dev extras because `respx` is not installed | :yellow_circle: | Run `pip install -e ".[dev]"` before full-suite validation |
-| Test coverage truth | Was 59% overall on 2026-09-01 morning (`server.py`/`cli.py`/`collector.py` at 0%, `analysis/` NLP modules 0-14%, `sources/intelligence.py` 22%). After the same-day test waves: **81% overall, 595 tests** (analysis modules 96-100%, `sources/intelligence.py` 93%, `server.py` 47% via import-based registry tests). Remaining zeros: `cli.py` (1,076 stmts); `collector.py` at 20% (map verified, run loop untested) | :yellow_circle: Improved | CI coverage gate that ratchets (Phase 24); `cli.py` smoke tests |
+| Test coverage truth | Was 59% overall on 2026-09-01 morning (`server.py`/`cli.py`/`collector.py` at 0%, `analysis/` NLP modules 0-14%, `sources/intelligence.py` 22%). After the same-day test waves: **81% overall, 597 tests** (analysis modules 96-100%, `sources/intelligence.py` 93%, `server.py` 47% via import-based registry tests). Remaining zeros: `cli.py` (1,076 stmts); `collector.py` at 20% (map verified, run loop untested) | :yellow_circle: Improved | CI coverage gate that ratchets (Phase 24); `cli.py` smoke tests |
 | Geofence correctness | Antimeridian AOIs lost the far side of the dateline (bbox clamp); pipelines/cables matched on endpoints only | :white_check_mark: Fixed in Phase 22 | Segment distance + split bboxes shipped with tests |
 | Security posture | Issue #21 (external report) assessed; no shell/eval/exec, SQL parameterized throughout, report paths server-generated | :white_check_mark: | SECURITY.md added with explicit threat model; cache db now 0600 |
 | Documentation drift | Prior roadmap documented 89/110 tools while the codebase now exposes 113 | :white_check_mark: Updated below | Keep roadmap synced with phase increments |
@@ -595,7 +595,7 @@ import-based tests make this refactor safe to attempt).
 | Tool parity | 122 / 122 | `TOOLS` and `_dispatch()` are aligned (now machine-checked by import-based tests, not text scans) |
 | Static datasets | 18 | Bases, ports, pipelines, nuclear, cables, datacenters, spaceports, minerals, exchanges, trade routes, cloud regions, financial centers |
 | RSS feeds | 119 | 24 categories |
-| Tests in repo | 613 | 595 non-smoke tests + 18 live smoke tests (measured 2026-09-01: `pytest -q` -> 595 passed, 18 deselected); full suite requires `.[dev]` |
+| Tests in repo | 615 | 597 non-smoke tests + 18 live smoke tests (measured 2026-09-01: `pytest -q` -> 597 passed, 18 deselected); full suite requires `.[dev]` |
 | Statement coverage | 81% | Measured 2026-09-01 full-suite `--cov`; was 59% that morning. Biggest remaining zeros: `cli.py` (0%), `collector.py` run loop (20%) |
 | Primary remaining gaps | `cli.py` tests, coverage gate, `server.py` refactor | See Planned Phases 23-26 |
 

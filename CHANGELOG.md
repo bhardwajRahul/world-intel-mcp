@@ -1,34 +1,10 @@
 # Changelog
 
-## Unreleased
-
-The data-honesty follow-up: the three verified fail-quietly bugs the
-0.4.0 test waves documented are now fixed, and coverage is gated in CI.
-
-### Fixed
-- A UNHCR outage no longer reads as zero refugees worldwide:
-  `intel_displacement_summary`'s failure shape carries `error`,
-  `degraded`, and `reason: unhcr_fetch_failed` instead of bare zeroed
-  totals (#22).
-- Climate zones whose fetch failed are named in `unavailable_zones`
-  (with `degraded: true`) instead of silently vanishing; a full
-  Open-Meteo outage is an `error` with a reason, and an invalid zone
-  filter now says so and lists the valid keys (#23).
-- "Resolved: Major outage" post-mortems no longer count as active
-  critical incidents (resolution status outranks incident keywords),
-  and a provider whose status feed is unreachable is named in
-  `unavailable_providers` instead of masquerading as healthy with no
-  incidents (#24).
-
-### Added
-- CI coverage ratchet: `--cov-fail-under=80` on the test job
-  (measured 81% on 2026-09-01; floor set one point under for platform
-  variance). The floor only moves up.
-
 ## 0.4.0 - 2026-09-01
 
-Geofences that survive the dateline, notice change, and a test suite
-that reaches the layers the old one never imported.
+Geofences that survive the dateline, notice change, a test suite that
+reaches the layers the old one never imported, and outages that say so
+instead of reading as good news.
 
 ### Added
 - `intel_aoi_changes` (+1 tool): geofence change detection — what
@@ -58,7 +34,11 @@ that reaches the layers the old one never imported.
   `sources/` modules (intelligence, cyber, climate, displacement,
   fleet, prediction, service_status, maritime, military parsing) had
   0-30% statement coverage; measured overall coverage was 59% before
-  this release despite a green 309-test suite.
+  this release despite a green 309-test suite. At release: 597
+  non-smoke tests, 81% statement coverage.
+- CI coverage ratchet: `--cov-fail-under=80` on the test job
+  (measured 81% on 2026-09-01; floor set one point under for platform
+  variance). The floor only moves up.
 
 ### Fixed
 - Antimeridian AOIs: the bounding box derived from an AOI's radius was
@@ -90,6 +70,19 @@ that reaches the layers the old one never imported.
 - `__version__` no longer drifts from `pyproject.toml` (it had been
   stuck at 0.1.0 since the first release): it now derives from the
   installed package metadata at runtime.
+- A UNHCR outage no longer reads as zero refugees worldwide:
+  `intel_displacement_summary`'s failure shape carries `error`,
+  `degraded`, and `reason: unhcr_fetch_failed` instead of bare zeroed
+  totals (#22).
+- Climate zones whose fetch failed are named in `unavailable_zones`
+  (with `degraded: true`) instead of silently vanishing; a full
+  Open-Meteo outage is an `error` with a reason, and an invalid zone
+  filter now says so and lists the valid keys (#23).
+- "Resolved: Major outage" post-mortems no longer count as active
+  critical incidents (resolution status outranks incident keywords),
+  and a provider whose status feed is unreachable is named in
+  `unavailable_providers` instead of masquerading as healthy with no
+  incidents (#24).
 
 ## 0.3.0 - 2026-08-16
 
