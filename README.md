@@ -57,7 +57,7 @@ Built for AI agents that need world awareness: market conditions, geopolitical r
 | **Cross-Domain Analytics** | 3 | Correlation, domain summary, trend detection |
 | **Reports** | 1 | PDF/HTML multi-domain intelligence reports |
 | **Daily Digest** | 1 | Cited markdown morning brief: top events, headlines, trends, and timeline |
-| **AOI Geofences** | 5 | User-defined areas of interest: define/list/delete, a cited multi-domain brief, and hotspot escalation scoring for a user's own area |
+| **AOI Geofences** | 7 | User-defined areas of interest: define/list/update/delete, a cited multi-domain brief, hotspot escalation scoring, and enter/leave change detection for a user's own area |
 | **Situation Brief** | 1 | Cited situational awareness brief over MCP: bounded server-side overview synthesized via local Ollama, with a mechanically-cited fallback |
 
 **Total: 122 tools** across 30+ intelligence domains.
@@ -571,7 +571,7 @@ Everything else uses free, unauthenticated public APIs.
 
 ```bash
 pip install -e ".[dev]"
-pytest                       # 574 tests (592 total, 18 live-network smoke tests deselected by default)
+pytest                       # 595 tests (613 total, 18 live-network smoke tests deselected by default)
 pytest --cov=world_intel_mcp # with coverage
 pytest tests/test_forex.py -v # single module
 ```
