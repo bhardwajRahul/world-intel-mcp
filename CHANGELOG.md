@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.7.0 - 2026-09-01
+
+The monolith splits. No behavior changes.
+
+### Changed
+- server.py (2,890 lines: a 128-entry Tool list plus an 800-line
+  match/case) is now a 158-line shell over 12 domain modules in
+  `world_intel_mcp/tools/` (markets, hazards, conflict,
+  infrastructure, society, intelligence, geospatial, synthesis,
+  finance, vector, aoi, system), with shared infrastructure (cache,
+  circuit breaker, AOI store, vector store, fetcher) in
+  `world_intel_mcp/runtime.py`. Each module exports TOOLS and
+  HANDLERS; `tools.aggregate()` refuses to import a registry whose
+  tools and handlers disagree or collide, so the drift the old
+  text-scan parity test could only catch in CI now prevents the
+  server from starting at all.
+- Pure move, verified three ways: an AST comparison of every
+  name/description/inputSchema against the pre-split registry
+  (127/127 byte-equal), the full suite (814 passed, 90.8% coverage),
+  and a live MCP stdio session (initialize, tools/list returning all
+  128, and a real tools/call round-trip).
+- Registry/registration tests upgraded from text-scans of server.py
+  to import-based assertions against the aggregated registry,
+  including a falsifiability test proving `aggregate()` rejects
+  drift and collisions.
+
 ## 0.6.0 - 2026-09-01
 
 The CLI stops lying about outages, and the new domains join the 24/7

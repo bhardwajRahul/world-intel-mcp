@@ -27,7 +27,7 @@
 | Geofence correctness | Antimeridian AOIs lost the far side of the dateline (bbox clamp); pipelines/cables matched on endpoints only | :white_check_mark: Fixed in Phase 22 | Segment distance + split bboxes shipped with tests |
 | Security posture | Issue #21 (external report) assessed; no shell/eval/exec, SQL parameterized throughout, report paths server-generated | :white_check_mark: | SECURITY.md added with explicit threat model; cache db now 0600 |
 | Documentation drift | Prior roadmap documented 89/110 tools while the codebase now exposes 113 | :white_check_mark: Updated below | Keep roadmap synced with phase increments |
-| Maintainability | `src/world_intel_mcp/server.py` is ~2.7k lines and remains the main refactor target | :yellow_circle: | Split tool registry and dispatch by domain (Phase 26) |
+| Maintainability | server.py split into 12 domain modules + runtime.py (158-line shell); parity enforced at import time | :white_check_mark: Shipped 2026-09-01 (Phase 26) | Largest module 444 lines |
 | CLI/dashboard parity for AOIs | AOI tools exist over MCP only; no `intel aoi` CLI group, no dashboard AOI layer | :red_circle: | Phase 23 |
 
 ### Implemented Addendum Missing From Prior Roadmap
@@ -586,10 +586,13 @@ Verified absent from `sources/` on 2026-09-01 (grep, not memory):
 Note: resolved in 0.6.0 - the four domains are in the collector's
 roster (50 sources), with the invariant test and docs updated together.
 
-### Phase 26 (planned): server.py Modularization
-~2.7k lines; split the tool registry and dispatch by domain, keeping
-the TOOLS/`_dispatch` parity invariant machine-checked (Phase 24's
-import-based tests make this refactor safe to attempt).
+### Phase 26: server.py Modularization (shipped 2026-09-01)
+The 2,890-line monolith is a 158-line shell over 12 domain modules in
+`tools/` plus shared infrastructure in `runtime.py`. The
+TOOLS/`_dispatch` parity invariant is now enforced at import time by
+`tools.aggregate()` (drift or collision refuses to start), verified by
+an AST byte-parity gate against the pre-split registry, the full
+suite, and a live MCP stdio session.
 
 ---
 

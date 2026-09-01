@@ -47,7 +47,9 @@ collector.py (daemon)  ──┘
 - `CircuitBreaker`: Per-source tracking. 3 consecutive failures trips the breaker for 5 minutes. Each RSS feed gets its own breaker (`rss:bbc_world`).
 - `Cache`: SQLite WAL-mode TTL cache. `get()` returns live data, `get_stale()` returns expired data for fallback.
 
-**Source modules** (`sources/*.py`): Each module exports `async def fetch_*(fetcher: Fetcher, **kwargs) -> dict`. Pure data fetching — no MCP awareness. 30 modules covering markets, seismology, military, cyber, health, tech, environmental, etc.
+**Tool registry** (`tools/*.py` + `runtime.py`, Phase 26): server.py is a thin shell; the 128 tools live in 12 domain modules under `tools/`, each exporting `TOOLS` (list of Tool definitions) and `HANDLERS` (tool name -> `async def h(arguments)`). Shared infrastructure (cache, circuit breaker, AOI store, vector store, fetcher) is constructed once in `runtime.py`; handlers reach it as `runtime.fetcher` etc. `tools/aggregate()` enforces TOOLS/HANDLERS parity and cross-module name uniqueness at import time — a drifted registry refuses to start.
+
+**Source modules** (`sources/*.py`): Each module exports `async def fetch_*(fetcher: Fetcher, **kwargs) -> dict`. Pure data fetching — no MCP awareness. 30+ modules covering markets, seismology, military, cyber, health, tech, environmental, etc.
 
 **Analysis modules** (`analysis/*.py`): Cross-domain intelligence that consumes outputs from multiple sources. Includes signal aggregation, instability indexing, NLP (entity extraction, classification, clustering, spike detection via Welford's algorithm), and strategic synthesis.
 
@@ -65,7 +67,7 @@ collector.py (daemon)  ──┘
 
 1. Create `sources/your_source.py` with `async def fetch_your_data(fetcher: Fetcher, **kwargs) -> dict`
 2. Use `fetcher.get_json(url, source="your-source", cache_key=..., cache_ttl=300)` — this gives you caching, retries, circuit breaking, and rate limiting automatically
-3. In `server.py`: import the module, add a `Tool(...)` to the `TOOLS` list, add a `case` to `_dispatch()`
+3. In the matching `tools/<domain>.py`: append the `Tool(...)` to that module's `TOOLS` and add a handler to its `HANDLERS` (`async def h(arguments)` calling your fetch via `runtime.fetcher`); `tools/aggregate()` fails the import if the two disagree
 4. Optionally add to `dashboard/app.py` (SSE endpoint) and `cli.py` (Click command)
 5. Add tests using `respx` to mock HTTP (see `tests/test_sources.py` for pattern)
 
