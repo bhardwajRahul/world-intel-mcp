@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.6.0 - 2026-09-01
+
+The CLI stops lying about outages, and the new domains join the 24/7
+collector.
+
+### Fixed
+- 33 CLI commands rendered an upstream `{"error": ...}` as a healthy
+  empty state ("0 earthquakes" over an empty table during a USGS
+  outage, error text discarded) - the fail-reads-as-success class at
+  the CLI layer. One shared bail-on-error path now prints the
+  upstream error prominently in table mode and passes the raw dict
+  through unchanged in --json-output mode. Partial degradation
+  renders data plus a visible warning (climate names its unavailable
+  zones); a displacement outage prints the error instead of "Grand
+  total: 0". 43 tests failed against the old behavior; 114 pass now.
+- Rich markup no longer swallows lowercase bracketed values or lets
+  remote feed titles inject markup: news categories, sanctions entity
+  types, ai-watch sources, and gh-trending languages render again;
+  the `intel report` fallback hint prints its `[pdf]` extra verbatim;
+  a feed title containing "[/]" renders literally instead of crashing
+  the command with a MarkupError. Escaping is per-site; the CLI's own
+  color styling is untouched.
+
+### Added
+- The four 0.5.0 domains (weather alerts, launch schedule, volcano
+  activity, cyclones) joined the collector's 24/7 vector-store
+  roster: 46 -> 50 sources, with the roster-count invariant test,
+  domain groups, and vector-store category mappings updated together.
+
+### Known issues
+- Remote data rendered inside Rich table cells is not yet
+  markup-escaped (the styling lives in those same cells; sweeping
+  ~50 table bodies is its own change). Tracked in ROADMAP Phase 24.5.
+
 ## 0.5.0 - 2026-09-01
 
 Geofences in any shape, four new hazard domains, precise entity

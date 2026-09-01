@@ -567,8 +567,9 @@ fail-quietly bugs below were fixed in the same-day follow-up
 | Country/company/leader entity matching was substring-based ("usa" inside "thousand", "hamas" inside "Bahamas") | `analysis/entities.py` | false positives | :white_check_mark: Fixed in 0.5.0 (word-boundary alternations, measured faster) |
 | Category keywords matched substrings ("airstrike" bumped severity via "strike"; "denied" fired "ied") | `analysis/classifier.py` | false positives | :white_check_mark: Fixed in 0.5.0 (boundary-anchored stems, per-keyword overrides) |
 | Silent-empty degradation without a marker on RSS/API failure | `sources/prediction.py` (documented as intended), `sources/maritime.py`, `sources/news.py` RSS path, `sources/fleet.py` `_safe` wrapper | silent degradation | :red_circle: |
-| ~30 CLI commands render an upstream error as a healthy empty state ("0 earthquakes" on an outage); ~17 commands surface errors correctly | `cli.py` | fail-reads-as-success | :red_circle: Pinned by deliberately-failing-on-fix tests in `test_cli.py` |
-| Rich markup swallows lowercase bracketed values (news categories, sanction types never render; the `report` pip hint prints without its `[pdf]` extra); also a markup-injection surface for bracketed sequences in remote feed titles | `cli.py` | output corruption | :red_circle: Pinned in `test_cli.py`; fix is markup escaping or markup=False |
+| 33 CLI commands rendered upstream errors as healthy empty states | `cli.py` | fail-reads-as-success | :white_check_mark: Fixed in 0.6.0 (shared bail-on-error path; 43 failing-first tests) |
+| Rich markup swallowed lowercase bracketed values and let remote titles inject markup | `cli.py` | output corruption | :white_check_mark: Fixed in 0.6.0 (per-site escaping; injection test) |
+| Remote data inside Rich TABLE cells is not markup-escaped (labels/free text outside tables are); a bracketed sequence in e.g. an earthquake place name can still be swallowed or raise MarkupError | `cli.py` | output corruption | :red_circle: Follow-up; needs a cell-escaping convention that preserves the CLI styling |
 
 ### Phase 25 (planned): Missing Domains
 Verified absent from `sources/` on 2026-09-01 (grep, not memory):
@@ -582,11 +583,8 @@ Verified absent from `sources/` on 2026-09-01 (grep, not memory):
 | Launch schedules | Launch Library 2 shipped in 0.5.0 (`intel_launch_schedule`) | :white_check_mark: |
 | BGP incidents | RIPE RIS / Cloudflare Radar routing (route leaks and hijacks; complements existing outage data) | :red_circle: |
 
-Note: the four 0.5.0 domains are MCP tools only; none are wired into the
-collector's 46-source vector-store roster yet (deliberate - the roster
-count is a tested invariant; wiring them in is a small follow-up that
-must update `test_collector.py` and CLAUDE.md's 46-source claim
-together).
+Note: resolved in 0.6.0 - the four domains are in the collector's
+roster (50 sources), with the invariant test and docs updated together.
 
 ### Phase 26 (planned): server.py Modularization
 ~2.7k lines; split the tool registry and dispatch by domain, keeping
