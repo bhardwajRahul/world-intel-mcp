@@ -110,6 +110,20 @@ TOOLS: list[Tool] = [
             },
         },
     ),
+    Tool(
+        name="intel_bgp_status",
+        description="Get BGP routing status for one prefix or ASN from RIPEstat: RIS peer visibility per address family, announced space and neighbour count (ASN queries), observed origin ASNs and per-origin RPKI validation valid/invalid/unknown (prefix queries). A per-resource health check, not global hijack detection - RIPEstat has no target-free incident feed. No API key needed.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "resource": {
+                    "type": "string",
+                    "description": "ASN (AS3333 or 3333) or CIDR prefix (193.0.0.0/21); bare IPs rejected",
+                },
+            },
+            "required": ["resource"],
+        },
+    ),
 ]
 
 
@@ -168,6 +182,14 @@ async def _service_status(arguments: dict[str, Any]) -> Any:
     )
 
 
+async def _bgp_status(arguments: dict[str, Any]) -> Any:
+    from ..sources import bgp
+
+    return await bgp.fetch_bgp_status(
+        runtime.fetcher, resource=arguments.get("resource", "")
+    )
+
+
 HANDLERS = {
     "intel_internet_outages": _internet_outages,
     "intel_cable_health": _cable_health,
@@ -178,5 +200,5 @@ HANDLERS = {
     "intel_traffic_incidents": _traffic_incidents,
     "intel_webcams": _webcams,
     "intel_shipping_index": _shipping_index,
-    "intel_service_status": _service_status,
+    "intel_service_status": _service_status,    "intel_bgp_status": _bgp_status,
 }

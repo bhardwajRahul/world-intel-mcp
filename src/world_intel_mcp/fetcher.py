@@ -25,6 +25,7 @@ _YAHOO_MIN_INTERVAL = 0.6  # seconds
 # Per-source rate limits (min seconds between calls).
 # Sources not listed here have no enforced limit.
 _SOURCE_RATE_LIMITS: dict[str, float] = {
+    "ripestat": 1.0,
     "yahoo-finance": 0.6,  # unofficial — ~100 req/min safe
     "opensky": 6.0,  # free tier: 10 req/min
     "coingecko": 2.0,  # free tier: 30 calls/min

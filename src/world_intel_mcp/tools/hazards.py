@@ -188,6 +188,29 @@ TOOLS: list[Tool] = [
         description="Get active tropical cyclones from the US National Hurricane Center: name, classification, intensity (knots), pressure (mb), position, movement, by-basin grouping. Covers the Atlantic, Eastern and Central Pacific basins only - Western Pacific / Indian Ocean storms (JTWC) are not included. Zero storms means a quiet tropics, not an outage; a fetch failure carries an explicit error. No API key needed.",
         inputSchema={"type": "object", "properties": {}},
     ),
+    Tool(
+        name="intel_meteoalarm_alerts",
+        description="Get active severe-weather warnings from Meteoalarm (EUMETNET): event type, severity, awareness color, area, onset/expires. Covers Europe only - 39 participating countries, each with its own feed (no Europe-wide feed exists); call without country to list available countries. Awareness color is derived from the warning title. Zero alerts means calm weather, not an outage; a fetch failure carries an explicit error. Content CC BY 4.0-equivalent. No API key needed.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "country": {
+                    "type": "string",
+                    "description": "Country name or slug (e.g. france, united-kingdom, uk). Omit to get the available-country roster.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max alerts (default 50); one warning may span several area entries",
+                    "default": 50,
+                },
+            },
+        },
+    ),
+    Tool(
+        name="intel_jtwc_cyclones",
+        description="Get active tropical cyclone warnings from the Joint Typhoon Warning Center: storm id, name, classification, warning number, issue time, warning text/graphic links, by-basin grouping, plus significant tropical weather advisories. Covers the Northwest Pacific, North Indian Ocean, and Southern Hemisphere; its Central/Eastern Pacific item overlaps NHC (intel_cyclones). Positions and intensities are not in the feed - they live in the linked warning products. Zero storms means quiet basins, not an outage. No API key needed.",
+        inputSchema={"type": "object", "properties": {}},
+    ),
 ]
 
 
@@ -257,6 +280,22 @@ async def _cyclones(arguments: dict[str, Any]) -> Any:
     return await cyclones.fetch_cyclones(runtime.fetcher)
 
 
+async def _meteoalarm_alerts(arguments: dict[str, Any]) -> Any:
+    from ..sources import meteoalarm
+
+    return await meteoalarm.fetch_meteoalarm_alerts(
+        runtime.fetcher,
+        country=arguments.get("country"),
+        limit=arguments.get("limit", 50),
+    )
+
+
+async def _jtwc_cyclones(arguments: dict[str, Any]) -> Any:
+    from ..sources import jtwc
+
+    return await jtwc.fetch_jtwc_cyclones(runtime.fetcher)
+
+
 HANDLERS = {
     "intel_earthquakes": _earthquakes,
     "intel_wildfires": _wildfires,
@@ -268,4 +307,6 @@ HANDLERS = {
     "intel_launch_schedule": _launch_schedule,
     "intel_volcano_activity": _volcano_activity,
     "intel_cyclones": _cyclones,
+    "intel_meteoalarm_alerts": _meteoalarm_alerts,
+    "intel_jtwc_cyclones": _jtwc_cyclones,
 }
