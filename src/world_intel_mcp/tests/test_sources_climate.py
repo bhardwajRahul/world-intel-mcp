@@ -104,13 +104,14 @@ async def test_fetch_climate_anomalies_unknown_zone(fetcher: Fetcher) -> None:
 
 @respx.mock
 @pytest.mark.asyncio
-async def test_fetch_climate_anomalies_api_failure_omits_zone(
+async def test_fetch_climate_anomalies_api_failure_is_marked_degraded(
     fetcher: Fetcher, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Suspected bug (documented, not fixed): a zone whose fetch fails is
-    silently omitted — the response carries no error/data_gaps marker, so a
-    full Open-Meteo outage returns {"zones": {}} indistinguishable in shape
-    from a valid run over zero requested zones."""
+    """Regression (silent-degradation class): a zone whose fetch failed
+    used to be silently omitted — a full Open-Meteo outage returned
+    {"zones": {}} indistinguishable in shape from a valid run. Failed
+    zones must now be named in unavailable_zones, and an all-zones
+    failure must carry error/degraded/reason."""
 
     async def _no_sleep(*args, **kwargs) -> None:
         return None
@@ -124,7 +125,10 @@ async def test_fetch_climate_anomalies_api_failure_omits_zone(
     result = await fetch_climate_anomalies(fetcher, zones=["sahel"])
     assert result["zones"] == {}
     assert result["significant_anomalies"] == []
-    assert "error" not in result  # current (dishonest-quiet) behavior
+    assert result["unavailable_zones"] == ["sahel"]
+    assert result["degraded"] is True
+    assert result["reason"] == "open_meteo_fetch_failed"
+    assert "unavailable" in result["error"].lower()
 
 
 def test_compute_anomalies_significant_temp() -> None:
@@ -171,3 +175,41 @@ def test_safe_avg_and_sum() -> None:
     assert _safe_avg([1.0, None, 3.0]) == 2.0
     assert _safe_sum([]) == 0.0
     assert _safe_sum([1.5, None, 2.5]) == 4.0
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_fetch_climate_anomalies_partial_failure_names_zone(
+    fetcher: Fetcher, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One zone failing while another succeeds is degraded (with the
+    failed zone named) but NOT an error: partial data is still data."""
+
+    async def _no_sleep(*args, **kwargs) -> None:
+        return None
+
+    monkeypatch.setattr(asyncio_mod, "sleep", _no_sleep)
+
+    def _by_zone(request):
+        # Sahel is lat 14.0, arctic is lat 80.0 (CLIMATE_ZONES): fail
+        # every sahel request (retries included), serve arctic.
+        if request.url.params.get("latitude") == "14.0":
+            return httpx.Response(500)
+        return httpx.Response(
+            200,
+            json={
+                "daily": {
+                    "temperature_2m_max": [10.0] * 7,
+                    "temperature_2m_min": [0.0] * 7,
+                    "precipitation_sum": [1.0] * 7,
+                }
+            },
+        )
+
+    respx.get(url__regex=r".*archive-api\.open-meteo\.com.*").mock(side_effect=_by_zone)
+
+    result = await fetch_climate_anomalies(fetcher, zones=["sahel", "arctic"])
+    assert list(result["zones"]) == ["arctic"]
+    assert result["unavailable_zones"] == ["sahel"]
+    assert result["degraded"] is True
+    assert "error" not in result

@@ -46,6 +46,7 @@ _CACHE_TTL = 1800  # 30 minutes
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -104,9 +105,7 @@ def _compute_anomalies(
 
     # Percentage anomaly (guard against near-zero baseline)
     precip_anomaly_pct = round(
-        ((current_precip_mm - baseline_precip_mm)
-         / max(baseline_precip_mm, 0.1))
-        * 100,
+        ((current_precip_mm - baseline_precip_mm) / max(baseline_precip_mm, 0.1)) * 100,
         1,
     )
 
@@ -127,6 +126,7 @@ def _compute_anomalies(
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
 
 async def fetch_climate_anomalies(
     fetcher: Fetcher,
@@ -157,12 +157,12 @@ async def fetch_climate_anomalies(
 
     # Determine which zones to fetch
     if zones is not None:
-        target_zones = {
-            k: v for k, v in CLIMATE_ZONES.items() if k in zones
-        }
+        target_zones = {k: v for k, v in CLIMATE_ZONES.items() if k in zones}
         if not target_zones:
             logger.warning("No valid zone keys in %s", zones)
             return {
+                "error": f"No valid zone keys in {zones!r}; "
+                f"valid keys: {sorted(CLIMATE_ZONES)}",
                 "zones": {},
                 "significant_anomalies": [],
                 "source": "open-meteo",
@@ -223,30 +223,38 @@ async def fetch_climate_anomalies(
 
         anomalies = _compute_anomalies(current_data, baseline_data)
 
-        return (zone_key, {
-            "name": zone_info["name"],
-            "lat": lat,
-            "lon": lon,
-            **anomalies,
-        })
+        return (
+            zone_key,
+            {
+                "name": zone_info["name"],
+                "lat": lat,
+                "lon": lon,
+                **anomalies,
+            },
+        )
 
     # Fetch all target zones in parallel
     tasks = [
-        _fetch_zone(zone_key, zone_info)
-        for zone_key, zone_info in target_zones.items()
+        _fetch_zone(zone_key, zone_info) for zone_key, zone_info in target_zones.items()
     ]
     results = await asyncio.gather(*tasks)
 
-    # Assemble response
+    # Assemble response. A zone whose fetch failed is NAMED in
+    # unavailable_zones, not silently omitted: before this, a full
+    # Open-Meteo outage returned {"zones": {}} indistinguishable in
+    # shape from a valid run (the silent-degradation class).
     zone_results: dict[str, dict] = {}
     significant_anomalies: list[str] = []
+    unavailable_zones: list[str] = []
 
     for zone_key, zone_data in results:
         if zone_data is None:
+            unavailable_zones.append(zone_key)
             continue
         zone_results[zone_key] = zone_data
         if zone_data["is_significant"]:
             significant_anomalies.append(zone_key)
+    unavailable_zones.sort()
 
     response = {
         "zones": zone_results,
@@ -254,6 +262,15 @@ async def fetch_climate_anomalies(
         "source": "open-meteo",
         "timestamp": _utc_now_iso(),
     }
+    if unavailable_zones:
+        response["unavailable_zones"] = unavailable_zones
+        response["degraded"] = True
+        if not zone_results:
+            response["error"] = (
+                "Open-Meteo unavailable for all requested zones: "
+                + ", ".join(unavailable_zones)
+            )
+            response["reason"] = "open_meteo_fetch_failed"
 
     # Cache composite result
     cache_label = "selected" if zones is not None else "all"
