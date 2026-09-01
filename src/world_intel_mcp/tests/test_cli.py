@@ -50,6 +50,7 @@ def _cli_isolation(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("WORLD_INTEL_CACHE_DB", str(tmp_path / "cli-cache.db"))
     monkeypatch.setenv("COLUMNS", "200")
     monkeypatch.setattr(cli, "_fetcher", None)
+    monkeypatch.setattr(cli, "_aoi_store", None, raising=False)
 
 
 def _invoke(*args: str):
@@ -127,12 +128,13 @@ def test_command_registry() -> None:
         "sync",
         "dashboard",
         "report",
+        "aoi",
     } <= names
     # webcams_cmd has no explicit name=, but click >= 8.1 strips the
     # `_cmd` suffix when deriving default command names, so the
     # user-facing name still comes out right.
     assert "webcams" in names
-    assert len(names) == 53
+    assert len(names) == 54
 
 
 # ---------------------------------------------------------------------------
@@ -2078,3 +2080,483 @@ def test_error_dict_reaches_table_output(
     assert "Error:" in result.output
     assert "upstream exploded" in result.output
     assert '"error"' not in result.output
+
+
+# ---------------------------------------------------------------------------
+# AOI geofences: intel aoi <define|define-polygon|define-corridor|list|
+# update|delete|brief|escalation|changes>
+#
+# CRUD subcommands exercise the real AOIStore against the tmp SQLite file
+# the _cli_isolation fixture points WORLD_INTEL_CACHE_DB at (the
+# test_server_registry pattern); the network-bound brief/escalation/changes
+# subcommands fake the analysis functions at the cli.aoi_analysis boundary,
+# same as every other faked fetch in this file.
+# ---------------------------------------------------------------------------
+
+
+def _define_zone(name: str = "TestZone") -> None:
+    result = _invoke(
+        "aoi", "define", name, "--lat", "12.5", "--lon", "45.25", "--radius-km", "150"
+    )
+    assert result.exit_code == 0, result.output
+
+
+def test_aoi_subcommand_registry() -> None:
+    assert set(cli.aoi_group.commands) == {
+        "define",
+        "define-polygon",
+        "define-corridor",
+        "list",
+        "update",
+        "delete",
+        "brief",
+        "escalation",
+        "changes",
+    }
+
+
+def test_aoi_store_shares_the_fetchers_cache_db() -> None:
+    # Mirrors runtime.py: the AOIStore must land in the literal SQLite
+    # file the process's Cache resolved to, not a fresh default-path
+    # computation.
+    _define_zone()
+    assert cli._aoi_store is not None
+    assert cli._fetcher is not None
+    assert cli._aoi_store.db_path == cli._fetcher.cache.db_path
+    assert cli._aoi_store.db_path.name == "cli-cache.db"
+
+
+def test_aoi_define_and_list_roundtrip() -> None:
+    _define_zone()
+    result = _invoke("aoi", "list")
+    assert result.exit_code == 0
+    assert "TestZone" in result.output
+    assert "circle" in result.output
+    assert "150" in result.output
+
+
+def test_aoi_define_ack_names_center_and_radius() -> None:
+    result = _invoke(
+        "aoi",
+        "define",
+        "TestZone",
+        "--lat",
+        "12.5",
+        "--lon",
+        "45.25",
+        "--radius-km",
+        "150",
+    )
+    assert result.exit_code == 0
+    assert "TestZone" in result.output
+    assert "12.5" in result.output
+    assert "45.25" in result.output
+    assert "150" in result.output
+
+
+def test_aoi_define_duplicate_is_error_not_overwrite() -> None:
+    _define_zone()
+    result = _invoke(
+        "aoi",
+        "define",
+        "testzone",
+        "--lat",
+        "1.5",
+        "--lon",
+        "2.5",
+        "--radius-km",
+        "10",
+    )
+    assert result.exit_code == 0
+    assert "Error:" in result.output
+    assert "already exists" in result.output
+
+
+def test_aoi_define_invalid_lat_surfaces_error_dict() -> None:
+    result = _invoke(
+        "aoi", "define", "Bad", "--lat", "95", "--lon", "0.5", "--radius-km", "50"
+    )
+    assert result.exit_code == 0
+    assert "Error:" in result.output
+    assert "lat must be between -90 and 90" in result.output
+
+
+def test_aoi_define_json_mode_passes_raw_dict() -> None:
+    result = _invoke(
+        "--json-output",
+        "aoi",
+        "define",
+        "TestZone",
+        "--lat",
+        "12.5",
+        "--lon",
+        "45.25",
+        "--radius-km",
+        "150",
+    )
+    assert result.exit_code == 0
+    assert '"aoi"' in result.output
+    assert '"TestZone"' in result.output
+
+
+def test_aoi_list_empty_prints_no_aois_message() -> None:
+    result = _invoke("aoi", "list")
+    assert result.exit_code == 0
+    assert "No AOIs defined" in result.output
+
+
+def test_aoi_list_json_mode_passes_raw_dict() -> None:
+    _define_zone()
+    result = _invoke("--json-output", "aoi", "list")
+    assert result.exit_code == 0
+    assert '"aois"' in result.output
+    assert '"count"' in result.output
+
+
+def test_aoi_define_polygon_and_corridor_kinds_listed() -> None:
+    poly = _invoke(
+        "aoi",
+        "define-polygon",
+        "TriZone",
+        "--vertex",
+        "12.5,45.0",
+        "--vertex",
+        "13.0,45.5",
+        "--vertex",
+        "12.0,46.0",
+    )
+    assert poly.exit_code == 0, poly.output
+    assert "TriZone" in poly.output
+    assert "3" in poly.output  # vertex count in the ack
+
+    corr = _invoke(
+        "aoi",
+        "define-corridor",
+        "LaneZone",
+        "--waypoint",
+        "10.5,40.0",
+        "--waypoint",
+        "11.5,41.0",
+        "--width-km",
+        "50",
+    )
+    assert corr.exit_code == 0, corr.output
+    assert "LaneZone" in corr.output
+    assert "2" in corr.output  # waypoint count in the ack
+    assert "50" in corr.output
+
+    listing = _invoke("aoi", "list")
+    assert "polygon" in listing.output
+    assert "corridor" in listing.output
+
+
+def test_aoi_define_polygon_bad_vertex_format_is_usage_error() -> None:
+    result = _invoke("aoi", "define-polygon", "Bad", "--vertex", "12.5")
+    assert result.exit_code == 2
+    assert "expected LAT,LON" in result.output
+
+
+def test_aoi_define_polygon_nonnumeric_vertex_is_usage_error() -> None:
+    result = _invoke("aoi", "define-polygon", "Bad", "--vertex", "a,b")
+    assert result.exit_code == 2
+    assert "expected numeric LAT,LON" in result.output
+
+
+def test_aoi_define_polygon_too_few_vertices_surfaces_error_dict() -> None:
+    # Count/range rules live in the analysis layer; the CLI surfaces its
+    # error dict through the shared red Error line.
+    result = _invoke(
+        "aoi", "define-polygon", "Duo", "--vertex", "12.5,45.0", "--vertex", "13.0,45.5"
+    )
+    assert result.exit_code == 0
+    assert "Error:" in result.output
+    assert "at least 3" in result.output
+
+
+def test_aoi_define_corridor_missing_width_is_usage_error() -> None:
+    result = _invoke(
+        "aoi",
+        "define-corridor",
+        "Lane",
+        "--waypoint",
+        "10.5,40.0",
+        "--waypoint",
+        "11.5,41.0",
+    )
+    assert result.exit_code == 2
+    assert "--width-km" in result.output
+
+
+def test_aoi_define_corridor_width_out_of_range_surfaces_error_dict() -> None:
+    result = _invoke(
+        "aoi",
+        "define-corridor",
+        "Lane",
+        "--waypoint",
+        "10.5,40.0",
+        "--waypoint",
+        "11.5,41.0",
+        "--width-km",
+        "900",
+    )
+    assert result.exit_code == 0
+    assert "Error:" in result.output
+    assert "width_km must be between" in result.output
+
+
+def test_aoi_update_rename_keeps_baseline() -> None:
+    _define_zone("Alpha")
+    result = _invoke("aoi", "update", "Alpha", "--new-name", "Bravo")
+    assert result.exit_code == 0
+    assert "Bravo" in result.output
+    assert "updated" in result.output
+    assert "baseline dropped" not in result.output
+
+    listing = _invoke("aoi", "list")
+    assert "Bravo" in listing.output
+    assert "Alpha" not in listing.output
+
+
+def test_aoi_update_geometry_change_reports_dropped_baseline() -> None:
+    _define_zone("Alpha")
+    result = _invoke("aoi", "update", "Alpha", "--radius-km", "300")
+    assert result.exit_code == 0
+    assert "300" in result.output
+    assert "baseline dropped" in result.output
+
+
+def test_aoi_update_missing_aoi_surfaces_error_dict() -> None:
+    result = _invoke("aoi", "update", "Ghost", "--new-name", "Spectre")
+    assert result.exit_code == 0
+    assert "Error:" in result.output
+    assert "not found" in result.output
+
+
+def test_aoi_update_polygon_geometry_is_refused() -> None:
+    poly = _invoke(
+        "aoi",
+        "define-polygon",
+        "TriZone",
+        "--vertex",
+        "12.5,45.0",
+        "--vertex",
+        "13.0,45.5",
+        "--vertex",
+        "12.0,46.0",
+    )
+    assert poly.exit_code == 0
+    result = _invoke("aoi", "update", "TriZone", "--lat", "20.5")
+    assert result.exit_code == 0
+    assert "Error:" in result.output
+    assert "cannot be set directly" in result.output
+
+
+def test_aoi_delete_then_missing() -> None:
+    _define_zone()
+    result = _invoke("aoi", "delete", "TestZone")
+    assert result.exit_code == 0
+    assert "Deleted AOI" in result.output
+    assert "TestZone" in result.output
+
+    again = _invoke("aoi", "delete", "TestZone")
+    assert again.exit_code == 0
+    assert "Error:" in again.output
+    assert "not found" in again.output
+
+
+_AOI_BRIEF = {
+    "aoi": {
+        "name": "TestZone",
+        "lat": 12.5,
+        "lon": 45.25,
+        "radius_km": 150.0,
+        "kind": "circle",
+    },
+    "markdown": (
+        "# AOI Brief: TestZone\n"
+        "Center: 12.5, 45.25 (radius 150.0 km)\n\n"
+        "## Earthquakes\n"
+        "- M5.1 near [red]Quaketown[/red] (12 km) [1]\n\n"
+        "## Data Gaps\n"
+        "- Wildfires: FIRMS key missing"
+    ),
+    "counts": {"earthquakes": 1},
+    "sources": [{"n": 1, "title": "USGS", "url": "https://example.test/eq"}],
+    "cited": True,
+    "data_gaps": ["Wildfires: FIRMS key missing"],
+    "source": "aoi-brief",
+    "timestamp": "2026-09-01T00:00:00Z",
+}
+
+
+def test_aoi_brief_renders_markdown_and_gaps(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list = []
+    monkeypatch.setattr(cli.aoi_analysis, "fetch_aoi_brief", _fake(_AOI_BRIEF, calls))
+    result = _invoke("aoi", "brief", "TestZone")
+    assert result.exit_code == 0
+    assert calls == [{"name": "TestZone"}]
+    assert "AOI Brief: TestZone" in result.output
+    assert "Wildfires: FIRMS key missing" in result.output
+    # Remote free text in the brief renders literally, never as markup.
+    assert "[red]Quaketown[/red]" in result.output
+
+
+def test_aoi_brief_error_dict_is_surfaced(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        cli.aoi_analysis, "fetch_aoi_brief", _fake({"error": "AOI 'X' not found."})
+    )
+    result = _invoke("aoi", "brief", "X")
+    assert result.exit_code == 0
+    assert "Error:" in result.output
+    assert "not found" in result.output
+
+
+def test_aoi_brief_json_mode_passes_raw_dict(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cli.aoi_analysis, "fetch_aoi_brief", _fake(_AOI_BRIEF))
+    result = _invoke("--json-output", "aoi", "brief", "TestZone")
+    assert result.exit_code == 0
+    assert '"markdown"' in result.output
+    assert '"data_gaps"' in result.output
+
+
+_AOI_ESCALATION = {
+    "aoi": {
+        "name": "TestZone",
+        "lat": 12.5,
+        "lon": 45.25,
+        "radius_km": 150.0,
+        "kind": "circle",
+    },
+    "score": 42.5,
+    "components": {
+        "baseline": 0.0,
+        "news": None,
+        "military": 12.0,
+        "conflict": 18.5,
+        "social_unrest": 0.4,
+        "convergence": None,
+    },
+    "unavailable_components": ["news", "convergence"],
+    "level": "elevated",
+    "trend_signal": "rising",
+    "data_gaps": ["Military flights: partial coverage: adsb window failed"],
+    "source": "aoi-escalation",
+    "timestamp": "2026-09-01T00:00:00Z",
+}
+
+
+def test_aoi_escalation_renders_score_components_and_gaps(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list = []
+    monkeypatch.setattr(
+        cli.aoi_analysis, "fetch_aoi_escalation", _fake(_AOI_ESCALATION, calls)
+    )
+    result = _invoke("aoi", "escalation", "TestZone")
+    assert result.exit_code == 0
+    assert calls == [{"name": "TestZone"}]
+    assert "42.5" in result.output
+    assert "elevated" in result.output
+    assert "rising" in result.output
+    assert "18.5" in result.output
+    # None components render as unmeasured, never a fabricated 0.0.
+    assert "not measured" in result.output
+    assert "adsb window failed" in result.output
+
+
+def test_aoi_escalation_error_dict_is_surfaced(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        cli.aoi_analysis, "fetch_aoi_escalation", _fake({"error": "AOI 'X' not found."})
+    )
+    result = _invoke("aoi", "escalation", "X")
+    assert result.exit_code == 0
+    assert "Error:" in result.output
+    assert "not found" in result.output
+    assert '"error"' not in result.output
+
+
+_AOI_CHANGES_BASELINE = {
+    "aoi": {
+        "name": "TestZone",
+        "lat": 12.5,
+        "lon": 45.25,
+        "radius_km": 150.0,
+        "kind": "circle",
+    },
+    "baseline": True,
+    "previous_taken_at": None,
+    "changes": {
+        "earthquakes": {"new": [], "departed": [], "unchanged": 3, "baseline": True},
+        "news": {"new": [], "departed": [], "unchanged": 1, "baseline": True},
+    },
+    "counts": {"earthquakes": 3, "news": 1},
+    "data_gaps": [],
+    "source": "aoi-changes",
+    "timestamp": "2026-09-01T00:00:00Z",
+}
+
+_AOI_CHANGES_DIFF = {
+    "aoi": {
+        "name": "TestZone",
+        "lat": 12.5,
+        "lon": 45.25,
+        "radius_km": 150.0,
+        "kind": "circle",
+    },
+    "baseline": False,
+    "previous_taken_at": "2026-09-01T10:00:00Z",
+    "changes": {
+        "earthquakes": {
+            "new": [{"key": "eq-new", "summary": "M5.1 Quaketown (12 km)"}],
+            "departed": [{"key": "eq-old", "summary": "M4.2 Oldplace (99 km)"}],
+            "unchanged": 2,
+        },
+        "military_flights": {
+            "new": [],
+            "departed": [],
+            "unchanged": 0,
+            "baseline": True,
+        },
+    },
+    "counts": {"earthquakes": 3, "military_flights": 0},
+    "data_gaps": ["News: RSS down"],
+    "source": "aoi-changes",
+    "timestamp": "2026-09-01T12:00:00Z",
+}
+
+
+def test_aoi_changes_baseline_then_diff(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        cli.aoi_analysis, "fetch_aoi_changes", _fake(_AOI_CHANGES_BASELINE)
+    )
+    result = _invoke("aoi", "changes", "TestZone")
+    assert result.exit_code == 0
+    # First sweep is a baseline: nothing may be claimed new or departed.
+    assert "Baseline established" in result.output
+    assert "M5.1" not in result.output
+    assert "departed" not in result.output.lower()
+
+    monkeypatch.setattr(cli.aoi_analysis, "fetch_aoi_changes", _fake(_AOI_CHANGES_DIFF))
+    result = _invoke("aoi", "changes", "TestZone")
+    assert result.exit_code == 0
+    assert "Baseline established" not in result.output
+    assert "2026-09-01T10:00:00Z" in result.output
+    assert "M5.1 Quaketown (12 km)" in result.output
+    assert "M4.2 Oldplace (99 km)" in result.output
+    assert "News: RSS down" in result.output
+    # A domain first seen this sweep reads as baseline, not as churn.
+    assert "military_flights" in result.output
+
+
+def test_aoi_changes_error_dict_json_mode_passes_raw_dict(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        cli.aoi_analysis, "fetch_aoi_changes", _fake({"error": "store exploded"})
+    )
+    result = _invoke("--json-output", "aoi", "changes", "TestZone")
+    assert result.exit_code == 0
+    assert '"error"' in result.output
+    assert "store exploded" in result.output

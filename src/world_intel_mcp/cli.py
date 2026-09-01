@@ -20,6 +20,7 @@ Two rendering conventions keep the output honest:
 
 import asyncio
 import json
+from datetime import datetime, timezone
 from typing import Any
 
 import click
@@ -30,6 +31,7 @@ from rich.text import Text
 from rich.panel import Panel
 from rich import box
 
+from .analysis import aoi as aoi_analysis
 from .cache import Cache
 from .circuit_breaker import CircuitBreaker
 from .fetcher import Fetcher
@@ -2027,6 +2029,353 @@ def report(
             border_style="green",
         )
     )
+
+
+# ---------------------------------------------------------------------------
+# AOI geofences
+# ---------------------------------------------------------------------------
+
+# AOI store — lazily initialized against the same physical SQLite file the
+# CLI's Cache resolved to (fallback path included), mirroring how
+# runtime.py builds the MCP server's store from its own cache.db_path.
+_aoi_store: aoi_analysis.AOIStore | None = None
+
+
+def _get_aoi_store() -> aoi_analysis.AOIStore:
+    global _aoi_store
+    if _aoi_store is None:
+        _aoi_store = aoi_analysis.AOIStore(_get_fetcher().cache.db_path)
+    return _aoi_store
+
+
+def _parse_latlon_pairs(
+    ctx: click.Context, param: click.Parameter, value: tuple[str, ...]
+) -> list[list[float]]:
+    """Parse repeated LAT,LON option values into [[lat, lon], ...].
+
+    Only the syntax is checked here (a malformed pair is a usage error,
+    exit 2); range and count rules belong to the analysis layer, which
+    reports them as {"error": ...} dicts through _bail_on_error.
+    """
+    pairs: list[list[float]] = []
+    for raw in value:
+        parts = raw.split(",")
+        if len(parts) != 2:
+            raise click.BadParameter(f"expected LAT,LON (got {raw!r})")
+        try:
+            pairs.append([float(parts[0]), float(parts[1])])
+        except ValueError:
+            raise click.BadParameter(
+                f"expected numeric LAT,LON (got {raw!r})"
+            ) from None
+    return pairs
+
+
+def _print_data_gaps(data: dict) -> None:
+    for gap in data.get("data_gaps", []):
+        console.print(f"[yellow]Gap:[/yellow] {escape(str(gap))}")
+
+
+@main.group(name="aoi")
+def aoi_group() -> None:
+    """User-defined areas of interest (AOIs/geofences)."""
+
+
+@aoi_group.command(name="define")
+@click.argument("name")
+@click.option("--lat", type=float, required=True, help="Center latitude, -90..90")
+@click.option("--lon", type=float, required=True, help="Center longitude, -180..180")
+@click.option(
+    "--radius-km", type=float, required=True, help="Radius in kilometers, 1..2000"
+)
+@click.pass_context
+def aoi_define(
+    ctx: click.Context, name: str, lat: float, lon: float, radius_km: float
+) -> None:
+    """Define a point-radius AOI."""
+    data = aoi_analysis.define_aoi(
+        _get_aoi_store(), name=name, lat=lat, lon=lon, radius_km=radius_km
+    )
+    if _bail_on_error(ctx, data):
+        return
+    a = data["aoi"]
+    console.print(
+        f"AOI [bold]{escape(str(a['name']))}[/bold] defined: "
+        f"center {a['lat']}, {a['lon']} (radius {a['radius_km']:g} km)"
+    )
+
+
+@aoi_group.command(name="define-polygon")
+@click.argument("name")
+@click.option(
+    "--vertex",
+    "vertices",
+    multiple=True,
+    metavar="LAT,LON",
+    callback=_parse_latlon_pairs,
+    help="Polygon vertex as LAT,LON; repeat 3-64 times",
+)
+@click.pass_context
+def aoi_define_polygon(
+    ctx: click.Context, name: str, vertices: list[list[float]]
+) -> None:
+    """Define a polygon AOI from repeated --vertex LAT,LON."""
+    data = aoi_analysis.define_polygon_aoi(
+        _get_aoi_store(), name=name, vertices=vertices
+    )
+    if _bail_on_error(ctx, data):
+        return
+    a = data["aoi"]
+    n_vertices = len((a.get("geometry") or {}).get("vertices", []))
+    console.print(
+        f"Polygon AOI [bold]{escape(str(a['name']))}[/bold] defined: "
+        f"{n_vertices} vertices, bounding radius {a['radius_km']:.0f} km "
+        f"around {a['lat']:.4f}, {a['lon']:.4f}"
+    )
+
+
+@aoi_group.command(name="define-corridor")
+@click.argument("name")
+@click.option(
+    "--waypoint",
+    "waypoints",
+    multiple=True,
+    metavar="LAT,LON",
+    callback=_parse_latlon_pairs,
+    help="Route waypoint as LAT,LON; repeat 2-64 times",
+)
+@click.option(
+    "--width-km", type=float, required=True, help="Total corridor width in km, 1..500"
+)
+@click.pass_context
+def aoi_define_corridor(
+    ctx: click.Context, name: str, waypoints: list[list[float]], width_km: float
+) -> None:
+    """Define a corridor AOI from repeated --waypoint LAT,LON plus a width."""
+    data = aoi_analysis.define_corridor_aoi(
+        _get_aoi_store(), name=name, waypoints=waypoints, width_km=width_km
+    )
+    if _bail_on_error(ctx, data):
+        return
+    a = data["aoi"]
+    geometry = a.get("geometry") or {}
+    console.print(
+        f"Corridor AOI [bold]{escape(str(a['name']))}[/bold] defined: "
+        f"{len(geometry.get('waypoints', []))} waypoints, width "
+        f"{geometry.get('width_km', width_km):g} km, bounding radius "
+        f"{a['radius_km']:.0f} km"
+    )
+
+
+@aoi_group.command(name="list")
+@click.pass_context
+def aoi_list_cmd(ctx: click.Context) -> None:
+    """List defined AOIs."""
+    data = aoi_analysis.list_aois(_get_aoi_store())
+    if _bail_on_error(ctx, data):
+        return
+
+    aois = data.get("aois", [])
+    if not aois:
+        console.print("[yellow]No AOIs defined[/yellow]")
+        return
+
+    table = Table(title=f"Areas of Interest ({len(aois)})", box=box.SIMPLE_HEAVY)
+    table.add_column("Name", style="bold")
+    table.add_column("Kind")
+    table.add_column("Center", justify="right")
+    table.add_column("Radius km", justify="right")
+    table.add_column("Created")
+
+    for a in aois:
+        created = datetime.fromtimestamp(
+            a.get("created_at", 0), tz=timezone.utc
+        ).strftime("%Y-%m-%d")
+        table.add_row(
+            _cell(a.get("name", "")),
+            _cell(a.get("kind", "circle")),
+            f"{a.get('lat', 0):.4f}, {a.get('lon', 0):.4f}",
+            f"{a.get('radius_km', 0):,.0f}",
+            created,
+        )
+    console.print(table)
+
+
+@aoi_group.command(name="update")
+@click.argument("name")
+@click.option("--new-name", default=None, help="New name (must not collide)")
+@click.option("--lat", type=float, default=None, help="New center latitude")
+@click.option("--lon", type=float, default=None, help="New center longitude")
+@click.option("--radius-km", type=float, default=None, help="New radius in km")
+@click.pass_context
+def aoi_update(
+    ctx: click.Context,
+    name: str,
+    new_name: str | None,
+    lat: float | None,
+    lon: float | None,
+    radius_km: float | None,
+) -> None:
+    """Rename an AOI and/or change a circle's center or radius."""
+    data = aoi_analysis.update_aoi(
+        _get_aoi_store(),
+        name=name,
+        new_name=new_name,
+        lat=lat,
+        lon=lon,
+        radius_km=radius_km,
+    )
+    if _bail_on_error(ctx, data):
+        return
+    a = data["aoi"]
+    console.print(
+        f"AOI [bold]{escape(str(a['name']))}[/bold] updated: "
+        f"center {a['lat']}, {a['lon']} (radius {a['radius_km']:g} km)"
+    )
+    if data.get("snapshot_dropped"):
+        console.print(
+            "[yellow]Change-detection baseline dropped (geometry changed); "
+            "the next 'intel aoi changes' sweep re-baselines.[/yellow]"
+        )
+
+
+@aoi_group.command(name="delete")
+@click.argument("name")
+@click.pass_context
+def aoi_delete(ctx: click.Context, name: str) -> None:
+    """Delete a defined AOI."""
+    data = aoi_analysis.delete_aoi(_get_aoi_store(), name=name)
+    if _bail_on_error(ctx, data):
+        return
+    console.print(f"Deleted AOI [bold]{escape(str(data.get('deleted', name)))}[/bold]")
+
+
+@aoi_group.command(name="brief")
+@click.argument("name")
+@click.pass_context
+def aoi_brief(ctx: click.Context, name: str) -> None:
+    """Cited brief for a defined AOI (data gaps included)."""
+    data = _run(
+        aoi_analysis.fetch_aoi_brief(_get_fetcher(), _get_aoi_store(), name=name)
+    )
+    if _bail_on_error(ctx, data):
+        return
+    # The brief's markdown embeds remote free text (news titles, place
+    # names); Text renders it literally, never through the markup parser.
+    # Its Data Gaps section is part of the markdown itself.
+    console.print(Text(str(data.get("markdown", ""))))
+
+
+@aoi_group.command(name="escalation")
+@click.argument("name")
+@click.pass_context
+def aoi_escalation(ctx: click.Context, name: str) -> None:
+    """Escalation score (0-100) for a defined AOI."""
+    data = _run(
+        aoi_analysis.fetch_aoi_escalation(_get_fetcher(), _get_aoi_store(), name=name)
+    )
+    if _bail_on_error(ctx, data):
+        return
+
+    a = data.get("aoi", {})
+    level = data.get("level", "")
+    l_style = {
+        "critical": "red bold",
+        "elevated": "yellow",
+        "watch": "dim",
+    }.get(level, "")
+    level_str = (
+        f"[{l_style}]{escape(str(level))}[/{l_style}]"
+        if l_style
+        else escape(str(level))
+    )
+    console.print(
+        f"[bold]{escape(str(a.get('name', name)))}[/bold] escalation: "
+        f"{data.get('score', 0)}/100 ({level_str}, "
+        f"trend {escape(str(data.get('trend_signal', '')))})"
+    )
+
+    table = Table(title="Components", box=box.SIMPLE_HEAVY)
+    table.add_column("Component", style="bold")
+    table.add_column("Points", justify="right")
+    for comp, points in data.get("components", {}).items():
+        if points is None:
+            table.add_row(_cell(comp), "[dim]not measured[/dim]")
+        else:
+            table.add_row(_cell(comp), f"{points:.1f}")
+    console.print(table)
+    _print_data_gaps(data)
+
+
+@aoi_group.command(name="changes")
+@click.argument("name")
+@click.pass_context
+def aoi_changes(ctx: click.Context, name: str) -> None:
+    """What entered or left a defined AOI since the last sweep."""
+    data = _run(
+        aoi_analysis.fetch_aoi_changes(_get_fetcher(), _get_aoi_store(), name=name)
+    )
+    if _bail_on_error(ctx, data):
+        return
+
+    a = data.get("aoi", {})
+    changes = data.get("changes", {})
+    if data.get("baseline"):
+        console.print(
+            f"Baseline established for [bold]{escape(str(a.get('name', name)))}[/bold]"
+            ": nothing is claimed to have entered or left; run again to diff."
+        )
+        table = Table(title="Baseline Observations", box=box.SIMPLE_HEAVY)
+        table.add_column("Domain", style="bold")
+        table.add_column("Observed", justify="right")
+        for domain, info in changes.items():
+            table.add_row(_cell(domain), str(info.get("unchanged", 0)))
+        console.print(table)
+        _print_data_gaps(data)
+        return
+
+    prev = data.get("previous_taken_at")
+    if prev:
+        console.print(f"[dim]Previous sweep: {escape(str(prev))}[/dim]")
+
+    table = Table(
+        title=f"AOI Changes — {escape(str(a.get('name', name)))}",
+        box=box.SIMPLE_HEAVY,
+    )
+    table.add_column("Domain", style="bold")
+    table.add_column("New", justify="right")
+    table.add_column("Departed", justify="right")
+    table.add_column("Unchanged", justify="right")
+    for domain, info in changes.items():
+        if info.get("baseline"):
+            # A domain first seen this sweep: a baseline, not churn.
+            table.add_row(
+                _cell(domain),
+                "[dim]baseline[/dim]",
+                "[dim]baseline[/dim]",
+                str(info.get("unchanged", 0)),
+            )
+        else:
+            table.add_row(
+                _cell(domain),
+                str(len(info.get("new", []))),
+                str(len(info.get("departed", []))),
+                str(info.get("unchanged", 0)),
+            )
+    console.print(table)
+
+    for domain, info in changes.items():
+        for item in info.get("new", []):
+            console.print(
+                f"  [green]+[/green] {escape(str(domain))}: "
+                f"{escape(str(item.get('summary', '')))}"
+            )
+        for item in info.get("departed", []):
+            console.print(
+                f"  [red]-[/red] {escape(str(domain))}: "
+                f"{escape(str(item.get('summary', '')))}"
+            )
+    _print_data_gaps(data)
 
 
 if __name__ == "__main__":
