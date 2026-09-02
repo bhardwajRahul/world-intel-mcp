@@ -1,6 +1,12 @@
 # Changelog
 
-## Unreleased
+## 0.10.0 - 2026-09-02
+
+Geofences become visible and their news becomes geographic: the
+dashboard draws every AOI with its last-sweep counts, and AOI news is
+searched by the place an area sits in rather than by its name. The
+roadmap's last planned item ships here; along the way, every live
+GDELT fetch was found to have been silently failing and was fixed.
 
 ### Added
 - Dashboard AOI layer: a toggleable "AOI Geofences" Leaflet layer draws

@@ -1,7 +1,7 @@
 # World Intel MCP — Feature Parity Roadmap
 
 **Benchmark**: [koala73/worldmonitor](https://github.com/koala73/worldmonitor)
-**Updated**: 2026-09-02 (v0.9.0)
+**Updated**: 2026-09-02 (v0.10.0)
 **Current tools**: 132 (131 intel + 1 status)
 
 ---
@@ -28,7 +28,7 @@
 | Security posture | Issue #21 (external report) assessed; no shell/eval/exec, SQL parameterized throughout, report paths server-generated | :white_check_mark: | SECURITY.md added with explicit threat model; cache db now 0600 |
 | Documentation drift | Prior roadmap documented 89/110 tools while the codebase now exposes 113 | :white_check_mark: Updated below | Keep roadmap synced with phase increments |
 | Maintainability | server.py split into 12 domain modules + runtime.py (158-line shell); parity enforced at import time | :white_check_mark: Shipped 2026-09-01 (Phase 26) | Largest module 444 lines |
-| CLI/dashboard parity for AOIs | AOI tools exist over MCP only; no `intel aoi` CLI group, no dashboard AOI layer | :red_circle: | Phase 23 |
+| CLI/dashboard parity for AOIs | Was MCP-only. `intel aoi` CLI group (9 subcommands) shipped in 0.8.0; dashboard AOI layer with last-sweep counts shipped in 0.10.0 | :white_check_mark: Shipped | Phase 23 complete |
 
 ### Implemented Addendum Missing From Prior Roadmap
 
@@ -531,9 +531,9 @@ Ordered by value; numbers are proposals, not commitments.
 | Corridor AOIs | Waypoint route + width; distances measured to the route | :white_check_mark: Shipped in 0.5.0 (`intel_aoi_define_corridor`) |
 | AOI groups / watchlists | `intel_aoi_digest` sweeps all (or named) AOIs in one call, advancing snapshots | :white_check_mark: Shipped in 0.8.0 |
 | Escalation news + convergence components | `intel_aoi_escalation` reports null for news/convergence; wire GDELT name-mention counts and the existing convergence grid | :yellow_circle: |
-| Geo-scoped news | AOI centre reverse-geocoded via OSM Nominatim (`sources/geocode.py`); GDELT searched for the settlement + county, e.g. `("Pittsburgh" OR "Allegheny County")`. Brief reports `news_scoping`; name-mention fallback is disclosed as a data gap. GDELT GEO 2.0 API was tried first and is 404 (both path variants, measured), so per-article coordinates are not available; the curated 105-city set could not do this either (nearest to Pittsburgh: Toronto, ~360 km) | :white_check_mark: Shipped (unreleased) |
+| Geo-scoped news | AOI centre reverse-geocoded via OSM Nominatim (`sources/geocode.py`); GDELT searched for the settlement + county, e.g. `("Pittsburgh" OR "Allegheny County")`. Brief reports `news_scoping`; name-mention fallback is disclosed as a data gap. GDELT GEO 2.0 API was tried first and is 404 (both path variants, measured), so per-article coordinates are not available; the curated 105-city set could not do this either (nearest to Pittsburgh: Toronto, ~360 km) | :white_check_mark: Shipped in 0.10.0 |
 | CLI parity | `intel aoi` group with all 9 subcommands, shared store semantics, live-smoked | :white_check_mark: Shipped in 0.8.0 |
-| Dashboard AOI layer | `/api/aois` + a toggleable "AOI Geofences" Leaflet layer: circles, polygons, and corridors drawn from the store, tooltip/detail with what the last collector sweep counted inside each. Reads the stored snapshot, never gathers live (a never-swept AOI says so instead of showing zeros; a broken store is a 503, not an empty map). Verified in headless Chromium: 2 shapes rendered, 50 km circle at 50,000 m, no console errors | :white_check_mark: Shipped (unreleased) |
+| Dashboard AOI layer | `/api/aois` + a toggleable "AOI Geofences" Leaflet layer: circles, polygons, and corridors drawn from the store, tooltip/detail with what the last collector sweep counted inside each. Reads the stored snapshot, never gathers live (a never-swept AOI says so instead of showing zeros; a broken store is a 503, not an empty map). Verified in headless Chromium: 2 shapes rendered, 50 km circle at 50,000 m, no console errors | :white_check_mark: Shipped in 0.10.0 |
 | Scheduled AOI sweeps | `aoi_digest` is a collector source (`fetch_aoi_sweep`, 240 s budget): every daemon cycle advances all AOI snapshots, so `--daemon` + the launchd wrapper IS the schedule. Change digests land in the collector log and vector store | :white_check_mark: Shipped in 0.9.0 |
 | AOI change notifications | `WORLD_INTEL_AOI_WEBHOOK` (+ `_FORMAT=json\|text`): the sweep POSTs non-quiet digests; quiet sweeps and dead sinks are honest `notification` records, never silent or fatal. Live-verified against a local sink. Email is out of scope (bring a webhook bridge) | :white_check_mark: Shipped in 0.9.0 |
 
@@ -605,7 +605,7 @@ suite, and a live MCP stdio session.
 | Tool parity | 128 / 128 | `TOOLS` and `_dispatch()` are aligned (now machine-checked by import-based tests, not text scans) |
 | Static datasets | 18 | Bases, ports, pipelines, nuclear, cables, datacenters, spaceports, minerals, exchanges, trade routes, cloud regions, financial centers |
 | RSS feeds | 119 | 24 categories |
-| Tests in repo | 899 | 881 non-smoke tests + 18 live smoke tests (measured 2026-09-02: `pytest -q` -> 881 passed, 18 deselected); full suite requires `.[dev]` |
+| Tests in repo | 918 | 900 non-smoke tests + 18 live smoke tests (measured 2026-09-02: `pytest -q` -> 900 passed, 18 deselected); full suite requires `.[dev]` |
 | Statement coverage | 91% | Measured 2026-09-01 night full-suite `--cov` (91.18%); was 59% that morning. CI ratchet at 89 |
 | Primary remaining gaps | `cli.py` tests, coverage gate, `server.py` refactor | See Planned Phases 23-26 |
 
