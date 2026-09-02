@@ -1,8 +1,8 @@
 # World Intel MCP — Feature Parity Roadmap
 
 **Benchmark**: [koala73/worldmonitor](https://github.com/koala73/worldmonitor)
-**Updated**: 2026-09-01 (evening)
-**Current tools**: 128 (127 intel + 1 status)
+**Updated**: 2026-09-02 (v0.9.0)
+**Current tools**: 132 (131 intel + 1 status)
 
 ---
 
@@ -534,8 +534,8 @@ Ordered by value; numbers are proposals, not commitments.
 | Geo-scoped news | AOI news is name-mention only; a generic AOI name ("Home") yields junk. Investigate GDELT geo filters / GKG location fields | :yellow_circle: |
 | CLI parity | `intel aoi` group with all 9 subcommands, shared store semantics, live-smoked | :white_check_mark: Shipped in 0.8.0 |
 | Dashboard AOI layer | Draw defined AOIs on the Leaflet map; show per-AOI counts | :red_circle: |
-| Scheduled AOI sweeps | `aoi_digest` is a collector source (`fetch_aoi_sweep`, 240 s budget): every daemon cycle advances all AOI snapshots, so `--daemon` + the launchd wrapper IS the schedule. Change digests land in the collector log and vector store | :white_check_mark: Shipped (unreleased) |
-| AOI change notifications | `WORLD_INTEL_AOI_WEBHOOK` (+ `_FORMAT=json\|text`): the sweep POSTs non-quiet digests; quiet sweeps and dead sinks are honest `notification` records, never silent or fatal. Live-verified against a local sink. Email is out of scope (bring a webhook bridge) | :white_check_mark: Shipped (unreleased) |
+| Scheduled AOI sweeps | `aoi_digest` is a collector source (`fetch_aoi_sweep`, 240 s budget): every daemon cycle advances all AOI snapshots, so `--daemon` + the launchd wrapper IS the schedule. Change digests land in the collector log and vector store | :white_check_mark: Shipped in 0.9.0 |
+| AOI change notifications | `WORLD_INTEL_AOI_WEBHOOK` (+ `_FORMAT=json\|text`): the sweep POSTs non-quiet digests; quiet sweeps and dead sinks are honest `notification` records, never silent or fatal. Live-verified against a local sink. Email is out of scope (bring a webhook bridge) | :white_check_mark: Shipped in 0.9.0 |
 
 ### Phase 24 (planned): Test Coverage Gate
 Measured 2026-09-01 (before the current test push): 59% statement
@@ -605,7 +605,7 @@ suite, and a live MCP stdio session.
 | Tool parity | 128 / 128 | `TOOLS` and `_dispatch()` are aligned (now machine-checked by import-based tests, not text scans) |
 | Static datasets | 18 | Bases, ports, pipelines, nuclear, cables, datacenters, spaceports, minerals, exchanges, trade routes, cloud regions, financial centers |
 | RSS feeds | 119 | 24 categories |
-| Tests in repo | 886 | 868 non-smoke tests + 18 live smoke tests (measured 2026-09-01 night: `pytest -q` -> 868 passed, 18 deselected); full suite requires `.[dev]` |
+| Tests in repo | 899 | 881 non-smoke tests + 18 live smoke tests (measured 2026-09-02: `pytest -q` -> 881 passed, 18 deselected); full suite requires `.[dev]` |
 | Statement coverage | 91% | Measured 2026-09-01 night full-suite `--cov` (91.18%); was 59% that morning. CI ratchet at 89 |
 | Primary remaining gaps | `cli.py` tests, coverage gate, `server.py` refactor | See Planned Phases 23-26 |
 

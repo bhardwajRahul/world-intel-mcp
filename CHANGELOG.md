@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.9.0 - 2026-09-02
+
+AOI geofences become a continuous watch: the collector daemon sweeps
+every defined area on its interval, and a webhook fires when something
+enters or leaves.
 
 ### Added
 - Scheduled AOI sweeps: `aoi_digest` is now a collector source
@@ -9,9 +13,8 @@
   `intel-collector --daemon` advances every defined geofence's change
   snapshot on each cycle - the daemon interval is the watch cadence,
   and the existing launchd wrapper makes it survive reboots. New `aoi`
-  domain group for `--sources aoi`. No push notification sink yet
-  (tracked in ROADMAP); digests land in the collector log and the
-  vector store.
+  domain group for `--sources aoi`. Digests land in the collector log
+  and the vector store, and in the webhook below when configured.
 - AOI change notifications: set `WORLD_INTEL_AOI_WEBHOOK` and the
   sweep POSTs every non-quiet digest (something entered or left a
   geofence) to that URL - `json` payload by default
