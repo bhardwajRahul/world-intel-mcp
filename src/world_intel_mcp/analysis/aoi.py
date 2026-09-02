@@ -1875,3 +1875,19 @@ async def fetch_aoi_digest(fetcher, store: AOIStore, names: Any = None) -> dict:
         "source": "aoi-digest",
         "timestamp": _utc_now_iso(),
     }
+
+
+async def fetch_aoi_sweep(fetcher) -> dict:
+    """Collector-daemon entry point for the AOI change sweep.
+
+    The collector calls every source as ``fn(fetcher)`` and cannot
+    supply the store ``fetch_aoi_digest`` needs, so this wrapper opens
+    the AOI store on the fetcher's own cache database — the same SQLite
+    file the MCP server and CLI write AOIs to — runs the digest (every
+    AOI's snapshot advances), and closes the store handle.
+    """
+    store = AOIStore(fetcher.cache.db_path)
+    try:
+        return await fetch_aoi_digest(fetcher, store)
+    finally:
+        store.close()

@@ -145,7 +145,7 @@ collector.py  (daemon)    ─┘
 - **CircuitBreaker**: Per-source tracking. 3 consecutive failures trips for 5 minutes. Each RSS feed gets its own breaker.
 - **Cache**: SQLite WAL-mode TTL cache. `get()` returns live data, `get_stale()` returns expired data for fallback.
 - **VectorStore**: Qdrant + FastEmbed (BAAI/bge-small-en-v1.5, 384-dim). Async background worker queue for non-blocking storage. Enables semantic search across all accumulated intelligence.
-- **Collector**: Standalone daemon that fetches all 50 sources in parallel and populates the vector store. Run once or as a daemon (default: 5-minute interval).
+- **Collector**: Standalone daemon that fetches all 51 sources in parallel and populates the vector store. Run once or as a daemon (default: 5-minute interval). Includes the AOI change sweep, so a running daemon continuously watches every defined geofence.
 - **Sources** (`sources/*.py`): 30+ modules, each exports `async def fetch_*(fetcher, **kwargs) -> dict`.
 - **Analysis** (`analysis/*.py`): Cross-domain synthesis — signal aggregation, instability indexing, NLP, company enrichment, macro composite.
 - **Config** (`config/*.py`): Curated datasets — 22 hotspots, 70+ bases, 40 ports, 24 pipelines, 24 nuclear facilities, 34 cables, 48 datacenters, 27 spaceports, 82 exchanges.
@@ -535,7 +535,14 @@ intel-collector --daemon              # every 5 minutes
 intel-collector --daemon --interval 120  # every 2 minutes
 intel-collector --sources markets,cyber  # specific domains only
 intel-collector                        # single collection cycle
+intel-collector --daemon --sources aoi --interval 900  # AOI watch only: sweep every geofence every 15 min
 ```
+
+The `aoi` group runs `intel_aoi_digest` as a sweep: each cycle diffs every
+defined AOI against its stored snapshot and advances it, so the daemon
+interval is your geofence watch cadence. Change digests are logged and
+(when the vector store is enabled) stored for semantic search. There is no
+push notification sink yet — see ROADMAP.
 
 ### Running as a macOS launchd Service
 

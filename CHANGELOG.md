@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- Scheduled AOI sweeps: `aoi_digest` is now a collector source
+  (`analysis.aoi.fetch_aoi_sweep`, a fetcher-only wrapper that opens
+  the AOI store on the fetcher's own cache database), so
+  `intel-collector --daemon` advances every defined geofence's change
+  snapshot on each cycle - the daemon interval is the watch cadence,
+  and the existing launchd wrapper makes it survive reboots. New `aoi`
+  domain group for `--sources aoi`. No push notification sink yet
+  (tracked in ROADMAP); digests land in the collector log and the
+  vector store.
+- Per-source collector timeout overrides (`SOURCE_TIMEOUTS`): a live
+  smoke caught a single 50 km AOI sweep on a cold cache blowing the
+  flat 45 s budget (the digest fans out to ~8 domains per AOI, several
+  rate-floored); the sweep now gets 240 s and the override path is
+  regression-tested.
+
 ## 0.8.0 - 2026-09-01
 
 AOIs become operational (one-call sweeps and a full CLI), and the

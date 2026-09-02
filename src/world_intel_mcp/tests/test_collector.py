@@ -13,8 +13,8 @@ from world_intel_mcp import collector
 
 
 def test_sources_count_matches_docs() -> None:
-    # CLAUDE.md and the collector docstring both say 50; measured here.
-    assert len(collector.SOURCES) == 50
+    # CLAUDE.md says 51; measured here.
+    assert len(collector.SOURCES) == 51
 
 
 def test_source_names_unique() -> None:
@@ -53,3 +53,21 @@ def test_every_source_kwarg_is_accepted_by_its_function() -> None:
             assert kw in sig.parameters, (
                 f"{name}: {module_path}.{fn_name} does not accept kwarg {kw!r}"
             )
+
+
+def test_aoi_sweep_is_a_collector_source() -> None:
+    """Phase 27: the scheduled AOI sweep rides the collector daemon.
+    ``aoi_digest`` must reference the fetcher-only sweep wrapper (the
+    digest itself needs a store argument the collector can't supply)
+    and be reachable via the ``aoi`` domain group."""
+    entries = {name: (mod, fn) for name, mod, fn, _ in collector.SOURCES}
+    assert entries["aoi_digest"] == ("analysis.aoi", "fetch_aoi_sweep")
+    assert collector.DOMAIN_GROUPS["aoi"] == ["aoi_digest"]
+
+
+def test_aoi_sweep_has_extended_timeout() -> None:
+    """Measured 2026-09-01: a single 50 km AOI sweep on a cold cache
+    exceeded the flat 45 s per-source budget (the digest fans out to
+    ~8 domains per AOI, several rate-floored). The override map must
+    give aoi_digest a real budget."""
+    assert collector.SOURCE_TIMEOUTS["aoi_digest"] >= 120.0

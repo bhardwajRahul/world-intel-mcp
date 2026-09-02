@@ -429,3 +429,27 @@ def test_main_daemon_flag_forwards_interval_and_sources(
     collector.main()  # daemon branch returns without SystemExit
 
     assert seen == {"interval": 60, "source_filter": "markets"}
+
+
+async def test_collect_once_honors_per_source_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A SOURCE_TIMEOUTS override must actually reach asyncio.wait_for —
+    a slow source with a short override times out even though the
+    default budget would have let it finish."""
+    import asyncio as _asyncio
+
+    async def _slow(fetcher, **kwargs):
+        await _asyncio.sleep(0.3)
+        return {"ok": True}
+
+    monkeypatch.setattr(
+        collector, "SOURCES", [("slowpoke", "sources.markets", "fetch_market_quotes", {})]
+    )
+    monkeypatch.setattr(collector, "SOURCE_TIMEOUTS", {"slowpoke": 0.05})
+    monkeypatch.setattr(collector, "_import_fetch_fn", lambda m, f: _slow)
+
+    store = FakeVectorStore()
+    summary = await collector.collect_once(FakeFetcher(), store, timeout=45.0)
+    assert summary["failures"] == 1
+    assert any("timeout (0.05s)" in e for e in summary["errors"])

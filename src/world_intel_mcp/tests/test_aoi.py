@@ -1770,3 +1770,55 @@ async def test_aoi_digest_domain_error_stays_per_aoi(
     assert any("Earthquakes" in g for g in entry["data_gaps"])
     assert "error" not in result  # the digest itself succeeded
     s.close()
+
+
+# ---------------------------------------------------------------------------
+# fetch_aoi_sweep — the collector-daemon entry point
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_aoi_sweep_derives_store_from_fetcher_cache(
+    fetcher, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The collector calls every source as ``fn(fetcher)``; the sweep
+    wrapper must open the AOI store on the same SQLite file the
+    fetcher's cache uses — the store the MCP server and CLI write to,
+    not a fresh default-path database."""
+    seen: dict = {}
+
+    async def _fake_digest(fetcher_, store, names=None):
+        seen["db"] = Path(store.db_path)
+        return {"marker": "digest"}
+
+    monkeypatch.setattr(aoi, "fetch_aoi_digest", _fake_digest)
+    result = await aoi.fetch_aoi_sweep(fetcher)
+    assert result == {"marker": "digest"}
+    assert seen["db"] == Path(fetcher.cache.db_path)
+
+
+@pytest.mark.asyncio
+async def test_aoi_sweep_real_path_no_aois(fetcher) -> None:
+    """Real (unmocked-digest) path: no AOIs defined is the honest note,
+    not an error, and the wrapper leaves no store handle behind."""
+    result = await aoi.fetch_aoi_sweep(fetcher)
+    assert "error" not in result
+    assert result["count"] == 0
+    assert "No AOIs defined" in result["note"]
+
+
+@pytest.mark.asyncio
+async def test_aoi_sweep_sees_aois_defined_via_cache_db(
+    fetcher, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AOIs defined through another store handle on the same cache DB
+    (as the MCP server or CLI would) are picked up by the sweep."""
+    _patch_all_domains(monkeypatch)
+    s = AOIStore(fetcher.cache.db_path)
+    aoi.define_aoi(s, "Pittsburgh", _PGH_LAT, _PGH_LON, _PGH_RADIUS_KM)
+    s.close()
+
+    result = await aoi.fetch_aoi_sweep(fetcher)
+    assert result["count"] == 1
+    assert result["aois"][0]["name"] == "Pittsburgh"
+    assert result["aois"][0]["baseline"] is True

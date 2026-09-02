@@ -108,7 +108,18 @@ SOURCES = [
     ("strategic_posture", "analysis.posture", "fetch_strategic_posture", {}),
     ("fleet_report", "sources.fleet", "fetch_fleet_report", {}),
     ("usni_fleet", "sources.usni_fleet", "fetch_usni_fleet", {}),
+    # AOI (change sweep across every user-defined geofence; each AOI's
+    # snapshot advances, so the daemon interval IS the watch cadence)
+    ("aoi_digest", "analysis.aoi", "fetch_aoi_sweep", {}),
 ]
+
+# Per-source timeout overrides (seconds), consulted instead of the flat
+# collect_once budget. The AOI sweep fans out to ~8 domains per defined
+# AOI, several behind rate floors: one 50 km AOI on a cold cache was
+# measured (2026-09-01) to exceed the default 45 s.
+SOURCE_TIMEOUTS: dict[str, float] = {
+    "aoi_digest": 240.0,
+}
 
 # Domain name → list of source names for --sources filtering
 DOMAIN_GROUPS = {
@@ -153,6 +164,7 @@ DOMAIN_GROUPS = {
     "social": ["social_signals"],
     "nuclear": ["nuclear_monitor"],
     "traffic": ["traffic_flow", "traffic_incidents"],
+    "aoi": ["aoi_digest"],
     "analysis": [
         "risk_scores",
         "signal_convergence",
@@ -204,12 +216,13 @@ async def collect_once(
     ]
 
     async def _fetch_one(name: str, module_path: str, fn_name: str, kwargs: dict):
+        budget = SOURCE_TIMEOUTS.get(name, timeout)
         try:
             fn = _import_fetch_fn(module_path, fn_name)
-            result = await asyncio.wait_for(fn(fetcher, **kwargs), timeout=timeout)
+            result = await asyncio.wait_for(fn(fetcher, **kwargs), timeout=budget)
             return name, result, None
         except asyncio.TimeoutError:
-            return name, None, f"timeout ({timeout}s)"
+            return name, None, f"timeout ({budget}s)"
         except Exception as exc:
             return name, None, str(exc)[:120]
 
