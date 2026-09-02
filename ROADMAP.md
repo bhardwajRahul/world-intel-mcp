@@ -535,7 +535,7 @@ Ordered by value; numbers are proposals, not commitments.
 | CLI parity | `intel aoi` group with all 9 subcommands, shared store semantics, live-smoked | :white_check_mark: Shipped in 0.8.0 |
 | Dashboard AOI layer | Draw defined AOIs on the Leaflet map; show per-AOI counts | :red_circle: |
 | Scheduled AOI sweeps | `aoi_digest` is a collector source (`fetch_aoi_sweep`, 240 s budget): every daemon cycle advances all AOI snapshots, so `--daemon` + the launchd wrapper IS the schedule. Change digests land in the collector log and vector store | :white_check_mark: Shipped (unreleased) |
-| AOI change notifications | A push sink for non-empty sweeps (webhook/ntfy/email) — today the digest is pulled from the log or vector store, nothing pushes | :red_circle: |
+| AOI change notifications | `WORLD_INTEL_AOI_WEBHOOK` (+ `_FORMAT=json\|text`): the sweep POSTs non-quiet digests; quiet sweeps and dead sinks are honest `notification` records, never silent or fatal. Live-verified against a local sink. Email is out of scope (bring a webhook bridge) | :white_check_mark: Shipped (unreleased) |
 
 ### Phase 24 (planned): Test Coverage Gate
 Measured 2026-09-01 (before the current test push): 59% statement

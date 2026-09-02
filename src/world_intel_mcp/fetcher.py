@@ -79,6 +79,27 @@ class Fetcher:
             await self._client.aclose()
             self._client = None
 
+    async def post(
+        self,
+        url: str,
+        *,
+        json: Any = None,
+        content: str | bytes | None = None,
+        headers: dict[str, str] | None = None,
+        timeout: float = 15.0,
+    ) -> httpx.Response:
+        """Outbound POST for operator-configured sinks (webhooks).
+
+        Deliberately outside the get_json machinery: no caching, no
+        retries, no circuit breaking, no rate floor — the target is the
+        operator's own endpoint and delivery/failure semantics belong
+        to the caller. Raises whatever httpx raises.
+        """
+        client = await self._get_client()
+        return await client.post(
+            url, json=json, content=content, headers=headers, timeout=timeout
+        )
+
     async def get_json(
         self,
         url: str,

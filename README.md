@@ -541,8 +541,11 @@ intel-collector --daemon --sources aoi --interval 900  # AOI watch only: sweep e
 The `aoi` group runs `intel_aoi_digest` as a sweep: each cycle diffs every
 defined AOI against its stored snapshot and advances it, so the daemon
 interval is your geofence watch cadence. Change digests are logged and
-(when the vector store is enabled) stored for semantic search. There is no
-push notification sink yet — see ROADMAP.
+(when the vector store is enabled) stored for semantic search. Set
+`WORLD_INTEL_AOI_WEBHOOK` to get a POST whenever a sweep finds something
+entered or left a geofence (quiet sweeps never fire); with
+`WORLD_INTEL_AOI_WEBHOOK_FORMAT=text` the body is raw markdown with a
+`Title` header, which ntfy-style sinks render directly.
 
 ### Running as a macOS launchd Service
 
@@ -587,6 +590,8 @@ The vector store uses FastEmbed (ONNX-based, BAAI/bge-small-en-v1.5) for embeddi
 | `OLLAMA_API_URL` | No | Ollama server for AI-generated briefs (default: `http://localhost:11434`) |
 | `OLLAMA_MODEL` | No | Ollama model for AI-generated briefs (default: `llama3.2`) |
 | `WORLD_INTEL_LOG_LEVEL` | No | Logging level (default: INFO) |
+| `WORLD_INTEL_AOI_WEBHOOK` | No | URL POSTed when an AOI sweep finds changes (collector daemon); quiet sweeps don't fire |
+| `WORLD_INTEL_AOI_WEBHOOK_FORMAT` | No | `json` (default: title/totals/markdown payload) or `text` (raw markdown body + `Title` header, ntfy-style) |
 
 Everything else uses free, unauthenticated public APIs.
 

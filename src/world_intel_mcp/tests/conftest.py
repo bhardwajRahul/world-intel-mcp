@@ -31,6 +31,14 @@ def _strip_proxy_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _strip_aoi_webhook_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A developer's real WORLD_INTEL_AOI_WEBHOOK must never receive
+    POSTs from tests that run the real sweep path."""
+    monkeypatch.delenv("WORLD_INTEL_AOI_WEBHOOK", raising=False)
+    monkeypatch.delenv("WORLD_INTEL_AOI_WEBHOOK_FORMAT", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _reset_fetcher_locks() -> None:
     """Reset global asyncio locks between tests to avoid cross-loop binding."""
     import world_intel_mcp.fetcher as fetcher_mod

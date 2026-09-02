@@ -34,6 +34,7 @@ import asyncio
 import json
 import logging
 import math
+import os
 import sqlite3
 import time
 from datetime import datetime, timezone
@@ -1877,6 +1878,59 @@ async def fetch_aoi_digest(fetcher, store: AOIStore, names: Any = None) -> dict:
     }
 
 
+async def _notify_aoi_changes(fetcher, digest: dict) -> dict:
+    """POST a non-quiet sweep digest to the operator's webhook.
+
+    Returns the honest delivery record attached to the digest as
+    ``notification``: unconfigured, skipped (quiet sweep), sent with
+    the status code, or failed with the error. Never raises — the
+    sweep already advanced its snapshots and must not fail because a
+    sink is down; but the failure is recorded, never swallowed.
+    """
+    url = os.environ.get("WORLD_INTEL_AOI_WEBHOOK", "").strip()
+    if not url:
+        return {"configured": False}
+    fmt = os.environ.get("WORLD_INTEL_AOI_WEBHOOK_FORMAT", "json").strip().lower()
+    if fmt not in ("json", "text"):
+        return {
+            "configured": True,
+            "sent": False,
+            "error": (
+                f"Unknown WORLD_INTEL_AOI_WEBHOOK_FORMAT {fmt!r}; use 'json' or 'text'."
+            ),
+        }
+    totals = digest.get("totals") or {}
+    new_items = totals.get("new_items") or 0
+    departed = totals.get("departed_items") or 0
+    if new_items + departed == 0:
+        return {"configured": True, "sent": False, "reason": "no changes this sweep"}
+    title = f"AOI sweep: {new_items} new, {departed} departed"
+    try:
+        if fmt == "text":
+            resp = await fetcher.post(
+                url,
+                content=digest.get("markdown", ""),
+                headers={"Title": title, "Content-Type": "text/markdown"},
+            )
+        else:
+            resp = await fetcher.post(
+                url,
+                json={
+                    "title": title,
+                    "totals": totals,
+                    "markdown": digest.get("markdown", ""),
+                    "timestamp": digest.get("timestamp"),
+                },
+            )
+    except Exception as exc:
+        return {"configured": True, "sent": False, "error": str(exc)[:200]}
+    return {
+        "configured": True,
+        "sent": 200 <= resp.status_code < 300,
+        "status_code": resp.status_code,
+    }
+
+
 async def fetch_aoi_sweep(fetcher) -> dict:
     """Collector-daemon entry point for the AOI change sweep.
 
@@ -1884,10 +1938,14 @@ async def fetch_aoi_sweep(fetcher) -> dict:
     supply the store ``fetch_aoi_digest`` needs, so this wrapper opens
     the AOI store on the fetcher's own cache database — the same SQLite
     file the MCP server and CLI write AOIs to — runs the digest (every
-    AOI's snapshot advances), and closes the store handle.
+    AOI's snapshot advances), and closes the store handle. If
+    ``WORLD_INTEL_AOI_WEBHOOK`` is set, a non-quiet digest is POSTed
+    there and the delivery record lands in ``notification``.
     """
     store = AOIStore(fetcher.cache.db_path)
     try:
-        return await fetch_aoi_digest(fetcher, store)
+        digest = await fetch_aoi_digest(fetcher, store)
     finally:
         store.close()
+    digest["notification"] = await _notify_aoi_changes(fetcher, digest)
+    return digest

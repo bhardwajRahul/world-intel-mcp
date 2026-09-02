@@ -88,6 +88,7 @@ Only these unlock additional data sources (everything else works unauthenticated
 - `FRED_API_KEY` — macro economic data
 - `OPENSKY_CLIENT_ID` / `OPENSKY_CLIENT_SECRET` — military flight fallback
 - `OLLAMA_API_URL` / `OLLAMA_MODEL`: Ollama server and model for AI-generated briefs (default `http://localhost:11434` / `llama3.2`)
+- `WORLD_INTEL_AOI_WEBHOOK` / `WORLD_INTEL_AOI_WEBHOOK_FORMAT` — AOI sweep change notifications (collector daemon): POST on non-quiet sweeps; format `json` (default) or `text` (raw markdown + `Title` header for ntfy-style sinks). Delivery record in the digest's `notification` field; a dead sink never fails the sweep.
 
 ## Testing
 

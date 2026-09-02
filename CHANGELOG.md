@@ -12,6 +12,18 @@
   domain group for `--sources aoi`. No push notification sink yet
   (tracked in ROADMAP); digests land in the collector log and the
   vector store.
+- AOI change notifications: set `WORLD_INTEL_AOI_WEBHOOK` and the
+  sweep POSTs every non-quiet digest (something entered or left a
+  geofence) to that URL - `json` payload by default
+  (title/totals/markdown/timestamp), or raw markdown with a `Title`
+  header via `WORLD_INTEL_AOI_WEBHOOK_FORMAT=text` for ntfy-style
+  sinks. Quiet sweeps never fire; an unreachable sink or non-2xx
+  response never fails the sweep (snapshots already advanced) but is
+  recorded honestly in the digest's `notification` field. New
+  `Fetcher.post()` carries the delivery - deliberately outside the
+  caching/retry/breaker machinery, since the target is the operator's
+  own endpoint. Live-verified end-to-end against a local sink: a real
+  sweep detected a change and the sink received the JSON payload.
 - Per-source collector timeout overrides (`SOURCE_TIMEOUTS`): a live
   smoke caught a single 50 km AOI sweep on a cold cache blowing the
   flat 45 s budget (the digest fans out to ~8 domains per AOI, several

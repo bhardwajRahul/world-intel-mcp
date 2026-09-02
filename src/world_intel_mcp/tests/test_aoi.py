@@ -10,9 +10,12 @@ making HTTP calls itself, so there is no network edge for respx to sit at.
 """
 
 import inspect
+import json
 from pathlib import Path
 
+import httpx
 import pytest
+import respx
 
 from world_intel_mcp.analysis import aoi
 from world_intel_mcp.analysis.aoi import AOIAlreadyExists, AOIStore
@@ -1793,7 +1796,8 @@ async def test_aoi_sweep_derives_store_from_fetcher_cache(
 
     monkeypatch.setattr(aoi, "fetch_aoi_digest", _fake_digest)
     result = await aoi.fetch_aoi_sweep(fetcher)
-    assert result == {"marker": "digest"}
+    assert result["marker"] == "digest"
+    assert result["notification"] == {"configured": False}
     assert seen["db"] == Path(fetcher.cache.db_path)
 
 
@@ -1822,3 +1826,150 @@ async def test_aoi_sweep_sees_aois_defined_via_cache_db(
     assert result["count"] == 1
     assert result["aois"][0]["name"] == "Pittsburgh"
     assert result["aois"][0]["baseline"] is True
+
+
+# ---------------------------------------------------------------------------
+# Sweep webhook notifications (WORLD_INTEL_AOI_WEBHOOK)
+# ---------------------------------------------------------------------------
+
+_HOOK = "https://hooks.example.test/aoi"
+
+
+def _digest_result(new: int, departed: int) -> dict:
+    return {
+        "aois": [{"name": "Pittsburgh"}],
+        "count": 1,
+        "totals": {"new_items": new, "departed_items": departed},
+        "markdown": "# AOI digest\n- M4.9 earthquake entered Pittsburgh",
+        "source": "aoi-digest",
+        "timestamp": "2026-09-01T00:00:00+00:00",
+    }
+
+
+def _patch_digest(monkeypatch: pytest.MonkeyPatch, digest: dict) -> None:
+    async def _fake(fetcher_, store, names=None):
+        return dict(digest)
+
+    monkeypatch.setattr(aoi, "fetch_aoi_digest", _fake)
+
+
+@pytest.mark.asyncio
+async def test_sweep_notification_unconfigured(
+    fetcher, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("WORLD_INTEL_AOI_WEBHOOK", raising=False)
+    _patch_digest(monkeypatch, _digest_result(2, 1))
+    result = await aoi.fetch_aoi_sweep(fetcher)
+    assert result["notification"] == {"configured": False}
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_sweep_notification_skips_quiet_sweep(
+    fetcher, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A sweep with zero changes must not POST — the sink is for
+    departures/arrivals, not a heartbeat."""
+    monkeypatch.setenv("WORLD_INTEL_AOI_WEBHOOK", _HOOK)
+    route = respx.post(_HOOK).mock(return_value=httpx.Response(200))
+    _patch_digest(monkeypatch, _digest_result(0, 0))
+    result = await aoi.fetch_aoi_sweep(fetcher)
+    note = result["notification"]
+    assert note["configured"] is True
+    assert note["sent"] is False
+    assert "no changes" in note["reason"]
+    assert not route.called
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_sweep_notification_posts_json(
+    fetcher, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("WORLD_INTEL_AOI_WEBHOOK", _HOOK)
+    monkeypatch.delenv("WORLD_INTEL_AOI_WEBHOOK_FORMAT", raising=False)
+    route = respx.post(_HOOK).mock(return_value=httpx.Response(200))
+    _patch_digest(monkeypatch, _digest_result(2, 1))
+
+    result = await aoi.fetch_aoi_sweep(fetcher)
+
+    note = result["notification"]
+    assert note["sent"] is True
+    assert note["status_code"] == 200
+    body = json.loads(route.calls.last.request.content)
+    assert "2 new" in body["title"] and "1 departed" in body["title"]
+    assert body["totals"] == {"new_items": 2, "departed_items": 1}
+    assert "earthquake entered Pittsburgh" in body["markdown"]
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_sweep_notification_text_format(
+    fetcher, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """format=text posts the raw markdown body with a Title header —
+    the shape ntfy-style sinks consume directly."""
+    monkeypatch.setenv("WORLD_INTEL_AOI_WEBHOOK", _HOOK)
+    monkeypatch.setenv("WORLD_INTEL_AOI_WEBHOOK_FORMAT", "text")
+    route = respx.post(_HOOK).mock(return_value=httpx.Response(200))
+    _patch_digest(monkeypatch, _digest_result(1, 0))
+
+    result = await aoi.fetch_aoi_sweep(fetcher)
+
+    assert result["notification"]["sent"] is True
+    req = route.calls.last.request
+    assert b"earthquake entered Pittsburgh" in req.content
+    assert "Title" in req.headers
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_sweep_notification_failure_is_honest(
+    fetcher, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A dead sink must not fail the sweep (snapshots already advanced)
+    but must not be silent either."""
+    monkeypatch.setenv("WORLD_INTEL_AOI_WEBHOOK", _HOOK)
+    respx.post(_HOOK).mock(side_effect=httpx.ConnectError("refused"))
+    _patch_digest(monkeypatch, _digest_result(1, 0))
+
+    result = await aoi.fetch_aoi_sweep(fetcher)
+
+    assert result["count"] == 1  # sweep itself succeeded
+    note = result["notification"]
+    assert note["sent"] is False
+    assert "refused" in note["error"]
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_sweep_notification_non_2xx_is_not_sent(
+    fetcher, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("WORLD_INTEL_AOI_WEBHOOK", _HOOK)
+    respx.post(_HOOK).mock(return_value=httpx.Response(500))
+    _patch_digest(monkeypatch, _digest_result(1, 0))
+
+    result = await aoi.fetch_aoi_sweep(fetcher)
+
+    note = result["notification"]
+    assert note["sent"] is False
+    assert note["status_code"] == 500
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_sweep_notification_unknown_format_rejected(
+    fetcher, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("WORLD_INTEL_AOI_WEBHOOK", _HOOK)
+    monkeypatch.setenv("WORLD_INTEL_AOI_WEBHOOK_FORMAT", "xml")
+    route = respx.post(_HOOK).mock(return_value=httpx.Response(200))
+    _patch_digest(monkeypatch, _digest_result(1, 0))
+
+    result = await aoi.fetch_aoi_sweep(fetcher)
+
+    note = result["notification"]
+    assert note["sent"] is False
+    assert "xml" in note["error"] and "json" in note["error"]
+    assert not route.called
