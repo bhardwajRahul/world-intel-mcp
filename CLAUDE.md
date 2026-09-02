@@ -61,7 +61,7 @@ collector.py (daemon)  ──┘
 
 **Reports** (`reports.py`): PDF/HTML intelligence report generator. Collects 18 domains in parallel, renders styled HTML, converts to PDF via WeasyPrint. Optional dependency: `pip install -e ".[pdf]"`.
 
-**Dashboard** (`dashboard/`): Self-contained Starlette app with a single `index.html` template (no frontend build step). SSE endpoint streams all domains in parallel via `asyncio.gather()`, refreshes every 30 seconds. Loads `.env` from project root on startup.
+**Dashboard** (`dashboard/`): Self-contained Starlette app with a single `index.html` template (no frontend build step). SSE endpoint streams all domains in parallel via `asyncio.gather()`, refreshes every 30 seconds. Loads `.env` from project root on startup. `/api/aois` feeds the AOI geofence layer from the shared AOI store: it opens a fresh `AOIStore` per request (`_open_aoi_store`) because SQLite connections are thread-bound and the handler may run on a different thread than a cached store's creator; it reads stored sweep snapshots and never gathers live. Endpoint tests use Starlette's `TestClient` without the context manager so lifespan (default-path `Cache`) never runs.
 
 ## Adding a New Tool
 

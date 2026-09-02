@@ -19,6 +19,7 @@ from starlette.applications import Starlette
 from starlette.responses import HTMLResponse, JSONResponse, StreamingResponse
 from starlette.routing import Route
 
+from world_intel_mcp.analysis.aoi import AOIStore
 from world_intel_mcp.cache import Cache
 from world_intel_mcp.circuit_breaker import CircuitBreaker
 from world_intel_mcp.fetcher import Fetcher
@@ -99,6 +100,20 @@ def _ensure_fetcher() -> Fetcher:
             logger.info("Vector store unavailable in dashboard mode")
         _fetcher = Fetcher(cache=_cache, breaker=_breaker, vector_store=_vector_store)
     return _fetcher
+
+
+def _open_aoi_store() -> AOIStore:
+    """Open the AOI store on the same cache database the MCP server and
+    CLI write geofences to, so the map shows exactly the areas a user
+    defined over MCP.
+
+    Opened per request and closed by the caller, never cached: SQLite
+    connections are bound to the thread that created them, and a
+    module-level store built on one thread and read from another (the
+    test client's portal thread; any ``to_thread`` path) raises. A
+    fresh connection per read is cheap and thread-safe by construction,
+    the same pattern ``analysis.aoi.fetch_aoi_sweep`` uses."""
+    return AOIStore(_ensure_fetcher().cache.db_path)
 
 
 # ---------------------------------------------------------------------------
@@ -325,53 +340,84 @@ async def api_stream(request):
                     "macro_signals": lambda: markets.fetch_macro_signals(fetcher),
                     "sector_heatmap": lambda: markets.fetch_sector_heatmap(fetcher),
                     "earthquakes": lambda: seismology.fetch_earthquakes(fetcher),
-                    "military_flights": lambda: military.fetch_military_flights(fetcher),
+                    "military_flights": lambda: military.fetch_military_flights(
+                        fetcher
+                    ),
                     "cyber_threats": lambda: cyber.fetch_cyber_threats(fetcher),
                     "news_feed": lambda: news.fetch_news_feed(fetcher),
                     "trending_keywords": lambda: news.fetch_trending_keywords(fetcher),
                     "nav_warnings": lambda: maritime.fetch_nav_warnings(fetcher),
-                    "internet_outages": lambda: infrastructure.fetch_internet_outages(fetcher),
+                    "internet_outages": lambda: infrastructure.fetch_internet_outages(
+                        fetcher
+                    ),
                     "cable_health": lambda: infrastructure.fetch_cable_health(fetcher),
                     "wildfires": lambda: wildfire.fetch_wildfires(fetcher),
-                    "prediction_markets": lambda: prediction.fetch_prediction_markets(fetcher),
+                    "prediction_markets": lambda: prediction.fetch_prediction_markets(
+                        fetcher
+                    ),
                     "airport_delays": lambda: aviation.fetch_airport_delays(fetcher),
-                    "climate_anomalies": lambda: climate.fetch_climate_anomalies(fetcher),
+                    "climate_anomalies": lambda: climate.fetch_climate_anomalies(
+                        fetcher
+                    ),
                     "energy_prices": lambda: economic.fetch_energy_prices(fetcher),
                     "gas_prices": lambda: economic.fetch_gas_prices(fetcher),
-                    "residential_natgas": lambda: economic.fetch_residential_natgas_prices(fetcher),
-                    "electricity_rates": lambda: economic.fetch_electricity_rates(fetcher),
-                    "stablecoin_status": lambda: markets.fetch_stablecoin_status(fetcher),
+                    "residential_natgas": lambda: economic.fetch_residential_natgas_prices(
+                        fetcher
+                    ),
+                    "electricity_rates": lambda: economic.fetch_electricity_rates(
+                        fetcher
+                    ),
+                    "stablecoin_status": lambda: markets.fetch_stablecoin_status(
+                        fetcher
+                    ),
                     "etf_flows": lambda: markets.fetch_etf_flows(fetcher),
                     "acled_events": lambda: conflict.fetch_acled_events(fetcher),
                     "ucdp_events": lambda: conflict.fetch_ucdp_events(fetcher),
-                    "displacement": lambda: displacement.fetch_displacement_summary(fetcher),
+                    "displacement": lambda: displacement.fetch_displacement_summary(
+                        fetcher
+                    ),
                     "risk_scores": lambda: intelligence.fetch_risk_scores(fetcher),
-                    "signal_convergence": lambda: intelligence.fetch_signal_convergence(fetcher),
+                    "signal_convergence": lambda: intelligence.fetch_signal_convergence(
+                        fetcher
+                    ),
                     "space_weather": lambda: space_weather.fetch_space_weather(fetcher),
                     "ai_watch": lambda: ai_watch.fetch_ai_watch(fetcher),
-                    "disease_outbreaks": lambda: health.fetch_disease_outbreaks(fetcher),
-                    "election_calendar": lambda: elections.fetch_election_calendar(fetcher),
+                    "disease_outbreaks": lambda: health.fetch_disease_outbreaks(
+                        fetcher
+                    ),
+                    "election_calendar": lambda: elections.fetch_election_calendar(
+                        fetcher
+                    ),
                     "shipping_index": lambda: shipping.fetch_shipping_index(fetcher),
                     "social_signals": lambda: social.fetch_social_signals(fetcher),
                     "nuclear_monitor": lambda: nuclear.fetch_nuclear_monitor(fetcher),
                     "alert_digest": lambda: fetch_alert_digest(fetcher),
                     "weekly_trends": lambda: fetch_weekly_trends(fetcher),
-                    "service_status": lambda: service_status.fetch_service_status(fetcher),
+                    "service_status": lambda: service_status.fetch_service_status(
+                        fetcher
+                    ),
                     "strategic_posture": lambda: fetch_strategic_posture(fetcher),
                     "fleet_report": lambda: fetch_fleet_report(fetcher),
                     "usni_fleet": lambda: fetch_usni_fleet(fetcher),
                     "population_exposure": lambda: fetch_population_exposure(fetcher),
-                    "domestic_flights": lambda: aviation.fetch_domestic_flights(fetcher),
+                    "domestic_flights": lambda: aviation.fetch_domestic_flights(
+                        fetcher
+                    ),
                     "traffic_flow": lambda: traffic.fetch_traffic_flow(fetcher),
-                    "traffic_incidents": lambda: traffic.fetch_traffic_incidents(fetcher),
+                    "traffic_incidents": lambda: traffic.fetch_traffic_incidents(
+                        fetcher
+                    ),
                     "webcams": lambda: webcams.fetch_webcams(fetcher),
                     "btc_technicals": lambda: markets.fetch_btc_technicals(fetcher),
                     "central_bank_rates": lambda: fetch_central_bank_rates(fetcher),
                 }
 
                 _SLOW = {
-                    "news_feed", "trending_keywords", "alert_digest",
-                    "weekly_trends", "strategic_posture",
+                    "news_feed",
+                    "trending_keywords",
+                    "alert_digest",
+                    "weekly_trends",
+                    "strategic_posture",
                 }
                 results_q: asyncio.Queue = asyncio.Queue()
 
@@ -396,12 +442,19 @@ async def api_stream(request):
                 # Yield each result as it arrives
                 while completed < total:
                     try:
-                        name, data = await asyncio.wait_for(results_q.get(), timeout=120)
+                        name, data = await asyncio.wait_for(
+                            results_q.get(), timeout=120
+                        )
                     except asyncio.TimeoutError:
                         break
                     completed += 1
                     payload = json.dumps(
-                        {"_progressive": True, "_done": completed, "_total": total, name: data},
+                        {
+                            "_progressive": True,
+                            "_done": completed,
+                            "_total": total,
+                            name: data,
+                        },
                         default=str,
                     )
                     yield f"data: {payload}\n\n"
@@ -482,6 +535,49 @@ async def api_static(request):
             },
         },
         headers={"Access-Control-Allow-Origin": "*"},
+    )
+
+
+async def api_aois(request):
+    """User-defined AOI geofences for the map layer, each with what the
+    last collector sweep counted inside it.
+
+    Reads the stored change snapshot rather than gathering live: drawing
+    a shape must never cost the 60-90 s of upstream fetches a brief
+    does. An AOI that has never been swept reports ``last_sweep: null``
+    rather than a row of zeros, and a broken store is a 503 with the
+    reason, never an empty list that reads as "no areas defined".
+    """
+    cors = {"Access-Control-Allow-Origin": "*"}
+    try:
+        store = _open_aoi_store()
+        try:
+            aois = []
+            for row in store.list_all():
+                snap = store.get_snapshot(row["name"])
+                last_sweep = None
+                if snap is not None:
+                    counts = {
+                        domain: len(items or {})
+                        for domain, items in (snap.get("domains") or {}).items()
+                    }
+                    last_sweep = {
+                        "taken_at": snap.get("taken_at"),
+                        "counts": counts,
+                        "total": sum(counts.values()),
+                    }
+                aois.append({**row, "last_sweep": last_sweep})
+        finally:
+            store.close()
+    except Exception as exc:
+        logger.warning("AOI layer unavailable: %s", exc)
+        return JSONResponse(
+            {"error": f"AOI store unavailable: {exc}", "aois": [], "count": 0},
+            status_code=503,
+            headers=cors,
+        )
+    return JSONResponse(
+        {"aois": aois, "count": len(aois), "source": "aoi-store"}, headers=cors
     )
 
 
@@ -638,6 +734,7 @@ app = Starlette(
         Route("/api/overview", api_overview),
         Route("/api/stream", api_stream),
         Route("/api/static", api_static),
+        Route("/api/aois", api_aois),
         Route("/api/health", api_health),
         Route("/api/report/pdf", api_report_pdf),
         Route("/sse/vector-analytics", sse_vector_analytics),

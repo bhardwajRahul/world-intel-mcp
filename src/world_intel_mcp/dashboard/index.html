@@ -742,6 +742,12 @@ a { color: var(--accent); text-decoration: none; }
         <span class="layer-count" id="cntNews">—</span>
         <div class="toggle on" style="--lc:var(--accent)"><div class="knob"></div></div>
     </div>
+    <div class="layer-row" data-layer="aoi">
+        <span class="layer-dot" style="background:#ff7f50"></span>
+        <span class="layer-label">AOI Geofences</span>
+        <span class="layer-count" id="cntAoi">—</span>
+        <div class="toggle on" style="--lc:#ff7f50"><div class="knob"></div></div>
+    </div>
     <div style="border-top:1px solid rgba(255,255,255,0.08);margin-top:4px;padding-top:6px">
         <div style="font-size:0.55rem;letter-spacing:1px;color:rgba(255,255,255,0.35);margin-bottom:4px">REGION</div>
         <div id="regionPresets" style="display:flex;flex-wrap:wrap;gap:2px">
@@ -829,7 +835,7 @@ function _withinTimeWindow(ts) { if (!ts) return true; var age = Date.now() - ne
 var latestData = null;
 var map = null;
 var mapLayers = {};
-var layerState = { quakes: true, military: true, conflict: true, fires: true, convergence: true, nuclear: true, infra: true, exposure: true, airtraffic: true, traffic: true, navwarnings: true, webcams: true, climate: true, news: true };
+var layerState = { quakes: true, military: true, conflict: true, fires: true, convergence: true, nuclear: true, infra: true, exposure: true, airtraffic: true, traffic: true, navwarnings: true, webcams: true, climate: true, news: true, aoi: true };
 // Restore saved layer toggles from localStorage
 try { var _saved = JSON.parse(localStorage.getItem('phoenix-layers')); if (_saved) { for (var _k in _saved) { if (layerState.hasOwnProperty(_k)) layerState[_k] = _saved[_k]; } } } catch(e) {}
 var drawerOpen = false;
@@ -926,6 +932,7 @@ function initMap() {
     mapLayers.webcams = L.layerGroup().addTo(map);
     mapLayers.climate = L.layerGroup().addTo(map);
     mapLayers.news = L.markerClusterGroup(clusterOpts(null, 35)).addTo(map);
+    mapLayers.aoi = L.layerGroup().addTo(map);
 }
 
 // ════════════ LAYER TOGGLES ════════════
@@ -951,8 +958,8 @@ $('#drawerToggle').addEventListener('click', function() {
 });
 
 // ════════════ DETAIL MODAL ════════════
-var COLORS = { earthquake: 'var(--red)', military: 'var(--blue)', conflict: 'var(--amber)', fire: 'var(--gold)', convergence: 'var(--purple)', nuclear: 'var(--green)', military_base: 'var(--teal)', port: 'var(--blue)', nuclear_facility: 'var(--gold)', pipeline: 'var(--purple)', exposure: '#e040fb', waterway: 'var(--accent)', cable: 'var(--blue)', airtraffic: '#00c8ff', traffic_city: '#e0e0e0', navwarn: '#ffc832', webcam: '#909090' };
-var LABELS = { earthquake: 'EARTHQUAKE', military: 'MILITARY AIRCRAFT', conflict: 'CONFLICT EVENT', fire: 'WILDFIRE CLUSTER', convergence: 'SIGNAL CONVERGENCE', nuclear: 'NUCLEAR MONITOR', military_base: 'MILITARY BASE', port: 'STRATEGIC PORT', nuclear_facility: 'NUCLEAR FACILITY', pipeline: 'PIPELINE', exposure: 'POPULATION EXPOSURE', waterway: 'STRATEGIC WATERWAY', cable: 'CABLE CORRIDOR', airtraffic: 'AIRCRAFT', traffic_city: 'TRAFFIC CONGESTION', navwarn: 'NAVIGATION WARNING', webcam: 'WEBCAM' };
+var COLORS = { earthquake: 'var(--red)', military: 'var(--blue)', conflict: 'var(--amber)', fire: 'var(--gold)', convergence: 'var(--purple)', nuclear: 'var(--green)', military_base: 'var(--teal)', port: 'var(--blue)', nuclear_facility: 'var(--gold)', pipeline: 'var(--purple)', exposure: '#e040fb', waterway: 'var(--accent)', cable: 'var(--blue)', airtraffic: '#00c8ff', traffic_city: '#e0e0e0', navwarn: '#ffc832', webcam: '#909090', aoi: '#ff7f50' };
+var LABELS = { earthquake: 'EARTHQUAKE', military: 'MILITARY AIRCRAFT', conflict: 'CONFLICT EVENT', fire: 'WILDFIRE CLUSTER', convergence: 'SIGNAL CONVERGENCE', nuclear: 'NUCLEAR MONITOR', military_base: 'MILITARY BASE', port: 'STRATEGIC PORT', nuclear_facility: 'NUCLEAR FACILITY', pipeline: 'PIPELINE', exposure: 'POPULATION EXPOSURE', waterway: 'STRATEGIC WATERWAY', cable: 'CABLE CORRIDOR', airtraffic: 'AIRCRAFT', traffic_city: 'TRAFFIC CONGESTION', navwarn: 'NAVIGATION WARNING', webcam: 'WEBCAM', aoi: 'AOI GEOFENCE' };
 
 function showDetail(type, d) {
     var title = '', subtitle = '', fields = [], link = '';
@@ -1324,6 +1331,18 @@ function showDrawerDetail(id) {
             ['Issued', d.dtg || d.date || '\u2014'],
             ['Text', d.text || d.description || '\u2014']
         ];
+    } else if (type === 'aoi') {
+        title = d.name || 'AOI';
+        var ak = d.kind || 'circle';
+        subtitle = ak.toUpperCase() + (ak === 'circle' ? ' • ' + d.radius_km + ' km radius' : ak === 'corridor' && d.geometry ? ' • ' + d.geometry.width_km + ' km wide' : '');
+        var ls = d.last_sweep;
+        fields = [
+            ['Name', d.name || '—'],
+            ['Shape', ak],
+            ['Center', (d.lat != null ? d.lat.toFixed(3) : '—') + ', ' + (d.lon != null ? d.lon.toFixed(3) : '—')],
+            ['Last sweep', ls ? ago(ls.taken_at * 1000) + ' ago (' + ls.total + ' items)' : 'never — run intel-collector --sources aoi', ls ? '' : 'high']
+        ];
+        if (ls) { Object.keys(ls.counts).sort().forEach(function(k) { fields.push([k.replace(/_/g, ' '), String(ls.counts[k])]); }); }
     } else if (type === 'pipeline') {
         title = d.name || 'Pipeline';
         subtitle = d.route || '';
@@ -1510,7 +1529,7 @@ function _toggleHelp() {
     document.body.appendChild(_helpOverlay);
 }
 
-var _layerKeys = ['quakes','military','conflict','fires','convergence','nuclear','infra','exposure','airtraffic','news'];
+var _layerKeys = ['quakes','military','conflict','fires','convergence','nuclear','infra','exposure','airtraffic','news','aoi'];
 function _toggleLayerByIndex(idx) {
     var key = _layerKeys[idx];
     if (!key || !mapLayers[key]) return;
@@ -3204,6 +3223,38 @@ function performSearch(q) {
     }
     setTimeout(function() { $('#searchInput').style.borderColor = ''; }, 2000);
 }
+
+// User AOI geofences: shapes from the store, counts from the last collector sweep.
+// Never gathers live per AOI (that costs 60-90 s each); a never-swept AOI says so.
+function updateMapAois(data) {
+    mapLayers.aoi.clearLayers();
+    var cnt = $('#cntAoi');
+    if (!data || data.error) { cnt.textContent = '!'; cnt.title = (data && data.error) || 'AOI fetch failed'; return; }
+    var aois = data.aois || [];
+    aois.forEach(function(a) {
+        var opts = { color: '#ff7f50', weight: 2, opacity: 0.9, fillColor: '#ff7f50', fillOpacity: 0.08, className: 'aoi-shape' };
+        var shape;
+        if (a.kind === 'polygon' && a.geometry && a.geometry.vertices) {
+            shape = L.polygon(a.geometry.vertices, opts);
+        } else if (a.kind === 'corridor' && a.geometry && a.geometry.waypoints) {
+            // Width is stated in the tooltip/detail; a polyline cannot draw it honestly at every zoom.
+            shape = L.polyline(a.geometry.waypoints, { color: '#ff7f50', weight: 3, opacity: 0.9, dashArray: '8 6', className: 'aoi-shape' });
+        } else {
+            shape = L.circle([a.lat, a.lon], Object.assign({ radius: (a.radius_km || 0) * 1000 }, opts));
+        }
+        var ls = a.last_sweep;
+        var sweep = ls ? ls.total + ' items, swept ' + ago(ls.taken_at * 1000) + ' ago' : 'never swept';
+        shape.bindTooltip(esc(a.name) + '<br><span style="opacity:0.7">' + esc(a.kind || 'circle') + ' • ' + esc(sweep) + '</span>', { className: 'mk-tip', sticky: true });
+        shape.on('click', function() { showDetail('aoi', a); });
+        shape.addTo(mapLayers.aoi);
+    });
+    cnt.textContent = aois.length;
+    cnt.title = '';
+}
+fetch('/api/aois')
+    .then(function(r) { return r.json(); })
+    .then(function(data) { try { updateMapAois(data); } catch(e) { console.warn('aoi layer failed:', e); } })
+    .catch(function(e) { console.warn('aoi fetch failed:', e); var c = $('#cntAoi'); c.textContent = '!'; c.title = String(e); });
 
 // Load static geospatial data immediately (bases, ports, nuclear facilities).
 fetch('/api/static')

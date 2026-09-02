@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Added
+- Dashboard AOI layer: a toggleable "AOI Geofences" Leaflet layer draws
+  every defined area (circle, polygon, corridor) from the shared store,
+  with a tooltip and detail panel showing what the last collector sweep
+  counted inside it. Backed by a new `/api/aois` endpoint that reads
+  the stored change snapshot and never gathers live, so drawing a shape
+  costs nothing upstream. An AOI that has never been swept says so
+  (`last_sweep: null`) instead of showing zeros; a broken store is a 503
+  with the reason, never an empty map that reads as "no areas defined".
+  Verified in headless Chromium: 2 shapes rendered, the 50 km circle at
+  50,000 m, no console errors. First endpoint tests for the dashboard
+  (Starlette TestClient); a real SQLite thread-affinity error surfaced
+  during them and was fixed by opening the store per request.
+
 ### Changed
 - AOI news is now scoped by where the area IS, not what it is named.
   Every other AOI domain was filtered geometrically; news alone was a
