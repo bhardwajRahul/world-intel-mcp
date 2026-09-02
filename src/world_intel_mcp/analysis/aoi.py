@@ -1191,6 +1191,67 @@ async def _fetch_military_merged(fetcher, bboxes: list[str]) -> dict:
     return out
 
 
+async def _aoi_news_query(fetcher, aoi_row: dict) -> tuple[str, dict]:
+    """Build the AOI's news query from where the area *is*.
+
+    Every other domain in an AOI brief is scoped geometrically; news
+    was the exception, searched by mention of whatever the user named
+    the area. Measured live 2026-09-02: an AOI named "Home" returned a
+    Chinese A-share IPO article and one named "PGH Square" an Indian
+    op-ed, both for a fence around Pittsburgh.
+
+    Reverse-geocoding the AOI centre gives the settlement and county
+    containing it, which is what a reader means by "news near here".
+    When that is unavailable (geocoder down, or genuinely unnamed
+    ground such as open ocean) the AOI name is the only thing left, so
+    it is used - and the returned record says so, because that is
+    precisely when the articles may be unrelated.
+
+    Returns ``(query, scoping)``.
+    """
+    from ..sources import geocode
+
+    aoi_name = str(aoi_row.get("name") or "").strip()
+    place_ctx = await geocode.fetch_place_context(
+        fetcher, aoi_row.get("lat"), aoi_row.get("lon")
+    )
+
+    if isinstance(place_ctx, dict) and place_ctx.get("error"):
+        return aoi_name, {
+            "basis": "aoi_name",
+            "query": aoi_name,
+            "reason": f"Reverse geocoding failed: {place_ctx['error']}",
+        }
+
+    terms = place_ctx.get("terms") or [] if isinstance(place_ctx, dict) else []
+    if not terms:
+        return aoi_name, {
+            "basis": "aoi_name",
+            "query": aoi_name,
+            "reason": (
+                place_ctx.get("note")
+                if isinstance(place_ctx, dict) and place_ctx.get("note")
+                else "No named place at these coordinates."
+            ),
+        }
+
+    # Quote each term so multi-word places stay phrases, and OR them so
+    # a county-level story about the area still lands. The parentheses
+    # are load-bearing: GDELT's DOC API returns nothing at all for a
+    # bare `"a" OR "b"` and works for `("a" OR "b")` (measured live
+    # 2026-09-02), so omitting them would silently empty AOI news.
+    quoted = [f'"{t}"' for t in terms]
+    query = quoted[0] if len(quoted) == 1 else "(" + " OR ".join(quoted) + ")"
+    return query, {
+        "basis": "geocoded",
+        "query": query,
+        "place": place_ctx.get("place"),
+        "county": place_ctx.get("county"),
+        "display_name": place_ctx.get("display_name"),
+        "source": "nominatim-reverse",
+    }
+
+
 async def _gather_scoped_domains(fetcher, aoi_row: dict) -> dict[str, dict]:
     """Fetch all six dynamic domains in parallel and scope each to the
     AOI. The single shared scoping path for ``fetch_aoi_brief`` and
@@ -1203,11 +1264,13 @@ async def _gather_scoped_domains(fetcher, aoi_row: dict) -> dict[str, dict]:
     regions) use the AOI's bounding circle; membership uses the exact
     shape. Military may additionally carry ``partial_errors``
     (antimeridian AOIs query two boxes; one can fail alone). News items
-    are the raw articles — scoped by AOI-name mention, not geography."""
+    are the raw articles, scoped by the place the AOI sits in (see
+    ``_aoi_news_query``); ``scoped["news"]["scoping"]`` records whether
+    that came from geocoding or fell back to the AOI's own name."""
     from ..sources import aviation, conflict, news, seismology
 
     lat, lon, radius_km = aoi_row["lat"], aoi_row["lon"], aoi_row["radius_km"]
-    aoi_name = aoi_row["name"]
+    news_query, news_scoping = await _aoi_news_query(fetcher, aoi_row)
     bboxes = bboxes_from_radius_km(lat, lon, radius_km)
     wildfire_regions = _overlapping_wildfire_regions(lat, lon, radius_km)
 
@@ -1225,7 +1288,9 @@ async def _gather_scoped_domains(fetcher, aoi_row: dict) -> dict[str, dict]:
         _safe_fetch(_fetch_wildfires_for_aoi(fetcher, wildfire_regions), "wildfires"),
         _safe_fetch(aviation.fetch_domestic_flights(fetcher), "domestic_flights"),
         _safe_fetch(
-            news.fetch_gdelt_search(fetcher, query=aoi_name, mode="artlist", limit=10),
+            news.fetch_gdelt_search(
+                fetcher, query=news_query, mode="artlist", limit=10
+            ),
             "news",
         ),
     )
@@ -1253,12 +1318,13 @@ async def _gather_scoped_domains(fetcher, aoi_row: dict) -> dict[str, dict]:
     _scope(aviation_result, "sampled", "aviation", "lat", "lon")
 
     if isinstance(news_result, dict) and news_result.get("error"):
-        scoped["news"] = {"error": str(news_result["error"])}
+        scoped["news"] = {"error": str(news_result["error"]), "scoping": news_scoping}
     else:
         scoped["news"] = {
             "items": (
                 news_result.get("articles", []) if isinstance(news_result, dict) else []
-            )
+            ),
+            "scoping": news_scoping,
         }
     return scoped
 
@@ -1411,7 +1477,14 @@ async def fetch_aoi_brief(fetcher, store: AOIStore, name: Any) -> dict:
                 f"- [{n}] {len(aviation_in_range)} sampled aircraft observed",
             )
 
-    # News headline mentions -----------------------------------------------
+    # News (scoped to the place the AOI sits in) ---------------------------
+    news_scoping = scoped["news"].get("scoping") or {}
+    if news_scoping.get("basis") == "aoi_name":
+        data_gaps.append(
+            "News is scoped by the AOI's name, not its location "
+            f"({news_scoping.get('reason', 'reverse geocoding unavailable')}); "
+            "articles may be unrelated to the area."
+        )
     if scoped["news"].get("error"):
         data_gaps.append(f"News: {scoped['news']['error']}")
         counts["news"] = 0
@@ -1518,6 +1591,7 @@ async def fetch_aoi_brief(fetcher, store: AOIStore, name: Any) -> dict:
         "sources": sources,
         "cited": cited,
         "data_gaps": data_gaps,
+        "news_scoping": news_scoping,
         "source": "aoi-brief",
         "timestamp": _utc_now_iso(),
     }

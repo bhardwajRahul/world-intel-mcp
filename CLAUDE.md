@@ -73,7 +73,9 @@ collector.py (daemon)  ──┘
 
 ## Key Patterns
 
-- **Source name string**: The `source` parameter in `fetcher.get_json()` identifies the API for circuit breaking and rate limiting. Must match entries in `_SOURCE_RATE_LIMITS` if rate-limited (e.g., `"yahoo-finance"`, `"coingecko"`, `"adsblol"`).
+- **Source name string**: The `source` parameter in `fetcher.get_json()` identifies the API for circuit breaking and rate limiting. Must match entries in `_SOURCE_RATE_LIMITS` if rate-limited (e.g., `"yahoo-finance"`, `"coingecko"`, `"adsblol"`, `"nominatim"`).
+- **GDELT needs its own timeout**: `api.gdeltproject.org` TCP-connects instantly but its TLS handshake runs 17-20 s and sometimes longer (measured 2026-09-02), and the Fetcher's 15 s default counts TLS inside connect. Every GDELT `get_json` call must pass `timeout=GDELT_TIMEOUT` (from `sources/news.py`, 45 s) or it silently fails and serves stale cache.
+- **AOI news is geographic** (`sources/geocode.py`): AOI briefs reverse-geocode the area centre with OSM Nominatim and search GDELT for the settlement/county, never the AOI's name. Nominatim policy: 1 req/s (`_SOURCE_RATE_LIMITS`), identifying User-Agent with contact URL, results cached 30 days. Tests must stub `geocode.fetch_place_context` (the shared `_patch_all_domains` helper in `test_aoi.py` does) — a suite that hits Nominatim live gets rate-limited within seconds.
 - **Tool dispatch**: `server.py` uses Python `match/case` to route tool names to source functions. Tool names follow `intel_*` convention.
 - **All source functions take `fetcher` as first arg** — never construct your own httpx client.
 - **Tests strip proxy env vars** automatically via `conftest.py` fixture (prevents SOCKS proxy interference). The conftest also resets global fetcher rate-limit locks between tests to avoid cross-event-loop binding.

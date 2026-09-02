@@ -117,11 +117,14 @@ def _raw_val(field) -> float | int | None:
 
 async def _fetch_company_news(fetcher: Fetcher, query: str) -> list[dict]:
     """Fetch recent news about the company from GDELT."""
+    from ..sources.news import GDELT_TIMEOUT
+
     data = await fetcher.get_json(
         _GDELT_DOC_URL,
         source="gdelt",
         cache_key=f"company:news:{query}",
         cache_ttl=1800,
+        timeout=GDELT_TIMEOUT,
         params={
             "query": f'"{query}"',
             "mode": "artlist",

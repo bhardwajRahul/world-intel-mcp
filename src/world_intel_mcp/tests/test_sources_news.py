@@ -255,3 +255,24 @@ def test_parse_published_fallbacks() -> None:
     assert _parse_published({"published": "raw"}) == "raw"
     assert _parse_published({"updated": "raw2"}) == "raw2"
     assert _parse_published({}) is None
+
+
+@pytest.mark.asyncio
+async def test_gdelt_search_uses_extended_timeout(fetcher, monkeypatch) -> None:
+    """Measured live 2026-09-02 from mac-studio: api.gdeltproject.org
+    TCP-connects in 0.03 s but its TLS handshake took 19.7 s, 17.4 s,
+    then >45 s across three samples, while Nominatim and USGS handshake
+    in 0.05 s. The Fetcher's 15 s default counts TLS inside connect, so
+    every live GDELT fetch was a ConnectTimeout hidden behind stale
+    cache. GDELT must be given its own budget."""
+    seen: dict = {}
+
+    async def _record(url, source, **kwargs):
+        seen.update(kwargs)
+        return {"articles": []}
+
+    monkeypatch.setattr(fetcher, "get_json", _record)
+    await news.fetch_gdelt_search(fetcher, query="test", mode="artlist", limit=1)
+
+    assert seen.get("timeout") is not None, "no timeout passed to get_json"
+    assert seen["timeout"] >= 30.0

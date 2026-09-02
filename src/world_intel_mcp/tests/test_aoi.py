@@ -22,6 +22,7 @@ from world_intel_mcp.analysis.aoi import AOIAlreadyExists, AOIStore
 from world_intel_mcp.sources import (
     aviation,
     conflict,
+    geocode,
     military,
     news,
     seismology,
@@ -426,7 +427,23 @@ def aoi_store_with_pittsburgh(tmp_path: Path) -> AOIStore:
     s.close()
 
 
+async def _fake_place_context(fetcher, lat, lon):
+    """Default reverse-geocode stub. Without this every AOI test would
+    make a live Nominatim request: slow, flaky, and rude to a free
+    service that rate-limits to one request per second."""
+    return {
+        "place": "Pittsburgh",
+        "county": "Allegheny County",
+        "state": "Pennsylvania",
+        "country_code": "us",
+        "display_name": "Pittsburgh, Allegheny County, Pennsylvania, United States",
+        "terms": ["Pittsburgh", "Allegheny County"],
+        "source": "nominatim-reverse",
+    }
+
+
 def _patch_all_domains(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(geocode, "fetch_place_context", _fake_place_context)
     monkeypatch.setattr(seismology, "fetch_earthquakes", _fake_earthquakes)
     monkeypatch.setattr(military, "fetch_military_flights", _fake_military)
     monkeypatch.setattr(conflict, "fetch_acled_events", _fake_acled)
@@ -1973,3 +1990,135 @@ async def test_sweep_notification_unknown_format_rejected(
     assert note["sent"] is False
     assert "xml" in note["error"] and "json" in note["error"]
     assert not route.called
+
+
+# ---------------------------------------------------------------------------
+# Geo-scoped AOI news (place names, not AOI-name mention)
+# ---------------------------------------------------------------------------
+
+
+def _patch_geocode(monkeypatch: pytest.MonkeyPatch, result: dict) -> None:
+    async def _fake(fetcher_, lat, lon):
+        return dict(result)
+
+    monkeypatch.setattr(geocode, "fetch_place_context", _fake)
+
+
+@pytest.mark.asyncio
+async def test_news_query_uses_geocoded_place_not_aoi_name(
+    fetcher, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The defect this fixes, measured live 2026-09-02: an AOI named
+    "Home" queried GDELT for "Home" and got a Chinese IPO article. The
+    query must come from where the AOI IS."""
+    _patch_geocode(
+        monkeypatch,
+        {
+            "place": "Pittsburgh",
+            "county": "Allegheny County",
+            "terms": ["Pittsburgh", "Allegheny County"],
+        },
+    )
+    row = {
+        "name": "Home",
+        "lat": _PGH_LAT,
+        "lon": _PGH_LON,
+        "radius_km": _PGH_RADIUS_KM,
+    }
+
+    query, basis = await aoi._aoi_news_query(fetcher, row)
+
+    assert "Pittsburgh" in query
+    assert "Home" not in query
+    assert basis["basis"] == "geocoded"
+    assert basis["place"] == "Pittsburgh"
+
+
+@pytest.mark.asyncio
+async def test_news_query_falls_back_to_name_and_says_so(
+    fetcher, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When geocoding fails the old name-mention behavior is the only
+    option left, but the caller must be told, because that is exactly
+    when results are unreliable."""
+    _patch_geocode(monkeypatch, {"error": "Nominatim HTTP 503", "place": None})
+    row = {
+        "name": "Pittsburgh",
+        "lat": _PGH_LAT,
+        "lon": _PGH_LON,
+        "radius_km": _PGH_RADIUS_KM,
+    }
+
+    query, basis = await aoi._aoi_news_query(fetcher, row)
+
+    assert query == "Pittsburgh"
+    assert basis["basis"] == "aoi_name"
+    assert "503" in basis["reason"]
+
+
+@pytest.mark.asyncio
+async def test_news_query_unnamed_place_falls_back_to_name(
+    fetcher, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Mid-ocean AOI: the lookup succeeded but named nothing."""
+    _patch_geocode(monkeypatch, {"place": None, "terms": [], "note": "open water"})
+    row = {"name": "Bering Watch", "lat": 60.0, "lon": -179.0, "radius_km": 200.0}
+
+    query, basis = await aoi._aoi_news_query(fetcher, row)
+
+    assert query == "Bering Watch"
+    assert basis["basis"] == "aoi_name"
+
+
+@pytest.mark.asyncio
+async def test_brief_reports_news_scoping_basis(
+    fetcher, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The brief must disclose how its news was scoped; a name-mention
+    fallback is a data gap, since those results may be unrelated."""
+    _patch_all_domains(monkeypatch)
+    _patch_geocode(monkeypatch, {"error": "Nominatim HTTP 503", "place": None})
+    s = AOIStore(tmp_path / "newsbasis.db")
+    aoi.define_aoi(s, "Home", _PGH_LAT, _PGH_LON, _PGH_RADIUS_KM)
+
+    result = await aoi.fetch_aoi_brief(fetcher, s, "Home")
+
+    assert result["news_scoping"]["basis"] == "aoi_name"
+    assert any("name" in g.lower() for g in result["data_gaps"])
+    s.close()
+
+
+@pytest.mark.asyncio
+async def test_news_query_parenthesizes_multi_term_or(
+    fetcher, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Measured live 2026-09-02: GDELT's DOC API returns NOTHING for a
+    bare `"a" OR "b"` and works for `("a" OR "b")`. Unparenthesized
+    would have been worse than the defect being fixed - silent empty
+    news instead of wrong news."""
+    _patch_geocode(
+        monkeypatch,
+        {
+            "place": "Pittsburgh",
+            "county": "Allegheny County",
+            "terms": ["Pittsburgh", "Allegheny County"],
+        },
+    )
+    row = {"name": "Home", "lat": _PGH_LAT, "lon": _PGH_LON, "radius_km": _PGH_RADIUS_KM}
+
+    query, _ = await aoi._aoi_news_query(fetcher, row)
+
+    assert query.startswith("(") and query.endswith(")")
+    assert query == '("Pittsburgh" OR "Allegheny County")'
+
+
+@pytest.mark.asyncio
+async def test_news_query_single_term_needs_no_parens(
+    fetcher, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _patch_geocode(monkeypatch, {"place": "Reykjavik", "county": None, "terms": ["Reykjavik"]})
+    row = {"name": "North Watch", "lat": 64.15, "lon": -21.94, "radius_km": 30.0}
+
+    query, _ = await aoi._aoi_news_query(fetcher, row)
+
+    assert query == '"Reykjavik"'

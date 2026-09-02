@@ -465,6 +465,14 @@ _STOPWORDS: set[str] = {
 
 _GDELT_DOC_URL = "https://api.gdeltproject.org/api/v2/doc/doc"
 
+# GDELT's TLS handshake is slow and erratic: measured 2026-09-02 at
+# 19.7 s, 17.4 s, then >45 s across three samples (TCP connect 0.03 s;
+# Nominatim and USGS handshake in 0.05 s on the same network). The
+# Fetcher's 15 s default counts TLS inside the connect phase, so every
+# live GDELT fetch was a ConnectTimeout that stale cache then hid.
+# Shared by every GDELT call site.
+GDELT_TIMEOUT = 45.0
+
 # Regex to strip punctuation from words
 _PUNCT_RE = re.compile(f"[{re.escape(string.punctuation)}]")
 
@@ -758,6 +766,7 @@ async def fetch_gdelt_search(
         cache_key=f"news:gdelt:{safe_query}:{mode}",
         cache_ttl=600,
         params=params,
+        timeout=GDELT_TIMEOUT,
     )
 
     if data is None:

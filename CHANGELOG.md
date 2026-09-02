@@ -1,5 +1,49 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+- AOI news is now scoped by where the area IS, not what it is named.
+  Every other AOI domain was filtered geometrically; news alone was a
+  GDELT search for the AOI's name, so an area called "Home" returned a
+  Chinese A-share IPO article and "PGH Square" an Indian op-ed on Gaza
+  (both measured live 2026-09-02, both for a fence around Pittsburgh).
+  New `sources/geocode.py` reverse-geocodes the AOI centre via OSM
+  Nominatim (no key; 1 req/s floor and an identifying User-Agent per
+  its usage policy; 30-day cache since places do not move) and the
+  brief/changes/digest search GDELT for the settlement and county
+  (`("Pittsburgh" OR "Allegheny County")`). The brief reports how news
+  was scoped in `news_scoping`; when geocoding is unavailable (geocoder
+  down, open ocean) it falls back to the AOI name and says so in
+  `data_gaps`, because that is exactly when articles may be unrelated.
+
+### Fixed
+- Every live GDELT fetch had been failing and hiding behind stale
+  cache. Root cause, measured: api.gdeltproject.org TCP-connects in
+  0.03 s but its TLS handshake took 19.7 s, 17.4 s, then >45 s across
+  three samples (Nominatim and USGS: 0.05 s on the same network), and
+  the Fetcher's 15 s default counts TLS inside the connect phase, so
+  every request was a `ConnectTimeout`. Both GDELT call sites (news
+  search, company profile) now use a shared 45 s `GDELT_TIMEOUT`;
+  live-verified afterwards with 10 real articles for the Pittsburgh
+  AOI. Handshakes slower than that still degrade to the existing honest
+  `error`/`degraded` shape.
+- GDELT DOC API requires OR clauses in parentheses: a bare `"a" OR "b"`
+  returns nothing at all (measured live). The news query builder wraps
+  multi-term queries; a regression test pins the exact form.
+- A failed Nominatim request (e.g. HTTP 429) was reported as "returned
+  an unexpected response shape", pointing a reader at parsing when the
+  cause was rate limiting. A failed fetch and a genuinely odd payload
+  now carry distinct messages.
+
+### Testing
+- The AOI test suite had briefly become non-hermetic: the shared
+  domain stub did not cover the new geocoder, so ~150 tests were each
+  making a live Nominatim request (suite time 0.9 s -> 15.8 s, and a
+  real 429 from OSM). The stub now covers it (back to 0.7 s), proven by
+  temporarily making any live geocode call raise: only the six tests
+  that mock Nominatim themselves touched it.
+
 ## 0.9.0 - 2026-09-02
 
 AOI geofences become a continuous watch: the collector daemon sweeps

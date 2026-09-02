@@ -57,7 +57,7 @@ Built for AI agents that need world awareness: market conditions, geopolitical r
 | **Cross-Domain Analytics** | 3 | Correlation, domain summary, trend detection |
 | **Reports** | 1 | PDF/HTML multi-domain intelligence reports |
 | **Daily Digest** | 1 | Cited markdown morning brief: top events, headlines, trends, and timeline |
-| **AOI Geofences** | 10 | User-defined areas of interest in three shapes (circle, polygon, corridor): define/list/update/delete, a cited multi-domain brief, hotspot escalation scoring, and enter/leave change detection for a user's own area |
+| **AOI Geofences** | 10 | User-defined areas of interest in three shapes (circle, polygon, corridor): define/list/update/delete, a cited multi-domain brief, hotspot escalation scoring, and enter/leave change detection for a user's own area. News is scoped to the place the area sits in (OSM Nominatim reverse geocoding, no key), not to the area's name |
 | **Severe Weather** | 2 | NWS active CAP alerts (US), Meteoalarm (39 EU countries) |
 | **Space Launches** | 1 | Launch Library 2 upcoming launches |
 | **Volcanoes** | 1 | Smithsonian GVP weekly activity report |

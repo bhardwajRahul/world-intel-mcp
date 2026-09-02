@@ -4,6 +4,7 @@ import httpx
 import pytest
 import respx
 
+from world_intel_mcp.analysis import company
 from world_intel_mcp.fetcher import Fetcher
 
 
@@ -233,3 +234,21 @@ async def test_fetch_company_profile_total_failure(fetcher: Fetcher) -> None:
     assert result["stock"] == {}
     assert result["recent_news"] == []
     assert "fetched_at" in result
+
+
+@pytest.mark.asyncio
+async def test_company_news_uses_extended_gdelt_timeout(fetcher, monkeypatch) -> None:
+    """Same GDELT slow-TLS finding as test_sources_news; the company
+    profile's news fetch is the second GDELT call site and must not
+    keep the 15 s default that fails every live request."""
+    seen: dict = {}
+
+    async def _record(url, source, **kwargs):
+        seen.update(kwargs)
+        return {"articles": []}
+
+    monkeypatch.setattr(fetcher, "get_json", _record)
+    await company._fetch_company_news(fetcher, "Nvidia")
+
+    assert seen.get("timeout") is not None, "no timeout passed to get_json"
+    assert seen["timeout"] >= 30.0

@@ -531,7 +531,7 @@ Ordered by value; numbers are proposals, not commitments.
 | Corridor AOIs | Waypoint route + width; distances measured to the route | :white_check_mark: Shipped in 0.5.0 (`intel_aoi_define_corridor`) |
 | AOI groups / watchlists | `intel_aoi_digest` sweeps all (or named) AOIs in one call, advancing snapshots | :white_check_mark: Shipped in 0.8.0 |
 | Escalation news + convergence components | `intel_aoi_escalation` reports null for news/convergence; wire GDELT name-mention counts and the existing convergence grid | :yellow_circle: |
-| Geo-scoped news | AOI news is name-mention only; a generic AOI name ("Home") yields junk. Investigate GDELT geo filters / GKG location fields | :yellow_circle: |
+| Geo-scoped news | AOI centre reverse-geocoded via OSM Nominatim (`sources/geocode.py`); GDELT searched for the settlement + county, e.g. `("Pittsburgh" OR "Allegheny County")`. Brief reports `news_scoping`; name-mention fallback is disclosed as a data gap. GDELT GEO 2.0 API was tried first and is 404 (both path variants, measured), so per-article coordinates are not available; the curated 105-city set could not do this either (nearest to Pittsburgh: Toronto, ~360 km) | :white_check_mark: Shipped (unreleased) |
 | CLI parity | `intel aoi` group with all 9 subcommands, shared store semantics, live-smoked | :white_check_mark: Shipped in 0.8.0 |
 | Dashboard AOI layer | Draw defined AOIs on the Leaflet map; show per-AOI counts | :red_circle: |
 | Scheduled AOI sweeps | `aoi_digest` is a collector source (`fetch_aoi_sweep`, 240 s budget): every daemon cycle advances all AOI snapshots, so `--daemon` + the launchd wrapper IS the schedule. Change digests land in the collector log and vector store | :white_check_mark: Shipped in 0.9.0 |
